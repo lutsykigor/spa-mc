@@ -10,10 +10,11 @@ import sys
 import threading
 import time
 import traceback
+from collections.abc import Callable
 from concurrent import interpreters
 from typing import Literal
 
-from spa_mc import telemetry, topology
+from spa_mc import handlers, telemetry, topology
 from spa_mc.autoscale import Autoscaler, WorkerSample
 from spa_mc.limiter import LimiterConfig
 from spa_mc.telemetry import WorkerState, WorkerStats
@@ -50,7 +51,7 @@ class RouterStats:
 class Engine:
     def __init__(
         self,
-        handler: str,
+        handler: str | Callable,
         *,
         workers: int | Literal['auto'] = 'auto',
         pin: bool = True,
@@ -60,7 +61,7 @@ class Engine:
         worker_queue: int = 1024,
         max_queue_wait: float | None = None,
         shed_response: bytes = b'',
-        on_start: str | None = None,
+        on_start: str | Callable | None = None,
         request_timeout: float | None = None,
         watchdog_interval: float = 0.005,
         stall_threshold: float = 0.02,
@@ -68,6 +69,7 @@ class Engine:
         shutdown_grace: float = 5.0,
         adapt_interval: float = 1.0,
         park_on_steal: bool = False,
+        stream_limit: int = 2**16,
     ) -> None:
         if routing == 'reuseport' and not hasattr(socket, 'SO_REUSEPORT'):
             raise ValueError('reuseport routing needs SO_REUSEPORT')
@@ -97,8 +99,10 @@ class Engine:
         self.startup_timeout = startup_timeout
         self._stale_after = max(stall_threshold, 4 * watchdog_interval)
         self._base_config = {
-            'handler': handler,
-            'on_start': on_start,
+            'handler': handlers.reference(handler),
+            'on_start': handlers.reference(on_start, 'on_start') if on_start else None,
+            'main_path': handlers.main_path(),
+            'stream_limit': stream_limit,
             'limiter': dataclasses.asdict(limiter) if limiter else None,
             'overload': overload,
             'max_queue_wait': max_queue_wait,
@@ -127,6 +131,7 @@ class Engine:
         self._paused = 0.0
         self._next = 0
         self._acceptor: asyncio.Task | None = None
+        self._stopped_acceptors: list[asyncio.Task] = []
         self._listener: socket.socket | None = None
         self._started = False
 
@@ -154,19 +159,65 @@ class Engine:
         if self.auto and self.routing != 'reuseport':
             self._adapter = asyncio.get_running_loop().create_task(self._adapt_loop())
 
-    async def serve_tcp(self, host: str = '127.0.0.1', port: int = 0, backlog: int = 1024) -> tuple[str, int]:
+    async def serve_tcp(
+        self,
+        host: str | None = '127.0.0.1',
+        port: int = 0,
+        backlog: int = 1024,
+        *,
+        sock: socket.socket | None = None,
+        start_serving: bool = True,
+    ) -> tuple[str, int]:
+        """Listen on `host:port` (all interfaces when `host` is None) or on an already-bound `sock`."""
         if self.routing == 'reuseport':
+            if sock is not None:
+                raise ValueError('reuseport workers bind their own listeners; sock= is not supported')
+            host = host or '0.0.0.0'
             port = port or _free_port(host)
             self._base_config.update(host=host, port=port, backlog=backlog)
             await self.start()
             return host, port
         if not self._started:
             await self.start()
-        listener = socket.create_server((host, port), backlog=backlog)
+        if sock is not None:
+            listener = sock
+        elif host is None and socket.has_dualstack_ipv6():
+            listener = socket.create_server(('', port), family=socket.AF_INET6, backlog=backlog, dualstack_ipv6=True)
+        else:
+            listener = socket.create_server((host or '', port), backlog=backlog)
         listener.setblocking(False)
         self._listener = listener
-        self._acceptor = asyncio.get_running_loop().create_task(self._accept_loop(listener))
+        if start_serving:
+            self.start_serving()
         return listener.getsockname()[:2]
+
+    @property
+    def listener(self) -> socket.socket | None:
+        return self._listener
+
+    def start_serving(self) -> None:
+        if self._listener is not None and self._acceptor is None:
+            self._acceptor = asyncio.get_running_loop().create_task(self._accept_loop(self._listener))
+
+    def is_serving(self) -> bool:
+        if self.routing == 'reuseport':
+            return self._started and bool(self._threads)
+        return self._acceptor is not None
+
+    def stop_serving(self) -> None:
+        """Stop accepting new connections at once; connections already accepted carry on."""
+        if self._acceptor is not None:
+            self._acceptor.cancel()
+            self._stopped_acceptors.append(self._acceptor)
+            self._acceptor = None
+        if self._listener is not None:
+            # Unregister before closing: the next socket can reuse this fd number while the loop still watches it.
+            try:
+                asyncio.get_running_loop().remove_reader(self._listener.fileno())
+            except NotImplementedError:
+                pass
+            self._listener.close()
+            self._listener = None
 
     def dispatch(self, sock: socket.socket) -> int | None:
         """Hand an accepted socket to a worker; returns its id, or None when the connection was shed.
@@ -206,13 +257,9 @@ class Engine:
             self._adapter.cancel()
             await asyncio.gather(self._adapter, return_exceptions=True)
             self._adapter = None
-        if self._acceptor:
-            self._acceptor.cancel()
-            await asyncio.gather(self._acceptor, return_exceptions=True)
-            self._acceptor = None
-        if self._listener:
-            self._listener.close()
-            self._listener = None
+        self.stop_serving()
+        await asyncio.gather(*self._stopped_acceptors, return_exceptions=True)
+        self._stopped_acceptors.clear()
         for worker_id, inbox in enumerate(self._inboxes):
             inbox.put(STOP)
             self._ring(worker_id)

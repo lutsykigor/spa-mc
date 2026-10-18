@@ -4,7 +4,7 @@ platform linux -- Python 3.14.8, pytest-9.1.1, pluggy-1.7.0 -- /usr/local/bin/py
 rootdir: /w
 configfile: pyproject.toml
 testpaths: tests
-collecting ... collected 65 items / 47 deselected / 18 selected
+collecting ... collected 76 items / 58 deselected / 18 selected
 
 tests/test_autoscale.py::test_quiet_workers_need_no_change PASSED        [  5%]
 tests/test_autoscale.py::test_a_worker_is_parked_only_after_sustained_steal PASSED [ 11%]
@@ -25,4 +25,4 @@ tests/test_topology.py::test_cgroup_v1_unlimited_quota PASSED            [ 88%]
 tests/test_topology.py::test_no_cgroup_information_means_no_quota PASSED [ 94%]
 tests/test_topology.py::test_budget_is_capped_by_the_quota_and_never_below_one PASSED [100%]
 
-====================== 18 passed, 47 deselected in 0.42s =======================
+====================== 18 passed, 58 deselected in 0.43s =======================

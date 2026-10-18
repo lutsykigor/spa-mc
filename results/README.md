@@ -4,9 +4,9 @@
 
 | platform | Python | result | log |
 |---|---|---|---|
-| Linux (Docker `python:3.14-slim`, arm64, 10 vCPUs) | 3.14.8 | **64 passed, 1 skipped** (the container-limit test, run separately below) | [tests-linux-py3.14.txt](tests-linux-py3.14.txt) |
+| Linux (Docker `python:3.14-slim`, arm64, 10 vCPUs) | 3.14.8 | **75 passed, 1 skipped** (the container-limit test, run separately below) | [tests-linux-py3.14.txt](tests-linux-py3.14.txt) |
 | Linux, container started with `--cpus=2` | 3.14.8 | container-limit, budget and auto-sizing tests **pass**; spa-mc sizes to 2 workers while Python reports 10 CPUs | [tests-linux-cpus2-py3.14.txt](tests-linux-cpus2-py3.14.txt) |
-| macOS (Apple M5) | 3.14.8 | **62 passed, 3 skipped** (pinning, `reuseport` and cgroup limits need Linux/Windows) | [tests-macos-py3.14.txt](tests-macos-py3.14.txt) |
+| macOS (Apple M5) | 3.14.8 | **73 passed, 3 skipped** (pinning, `reuseport` and cgroup limits need Linux/Windows) | [tests-macos-py3.14.txt](tests-macos-py3.14.txt) |
 | Windows | 3.14 | via GitHub Actions on every push ([workflow](../.github/workflows/tests.yml)); no local run yet | — |
 
 The suite was run three to five times per platform at each stage. Repetition caught one intermittent failure: a torn
@@ -14,6 +14,10 @@ telemetry read on Apple silicon, about once in twenty runs, which led to the che
 
 What the suite proves, in short:
 
+- `spa_mc.start_server` behaves like `asyncio.start_server`: takes the handler function, serves until `serve_forever()`
+  is cancelled, honours `start_serving=False`, `limit`, `sock` and `host=None`, refuses new connections after `close()`
+  while finishing accepted ones, rejects lambdas and closures up front, and runs handlers defined in the main script
+  without re-running its `__main__` block;
 - workers are distinct interpreters and distinct OS threads in **one PID**, and CPU-bound handlers on 4 workers finish
   **≥ 2x** faster than on 1 (3.2x measured locally);
 - 300 concurrent clients each get their own reply; connections spread over all workers;

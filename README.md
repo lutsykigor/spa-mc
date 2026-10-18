@@ -4,24 +4,47 @@
 plus per-core adaptive concurrency control and load-aware connection routing. Every request is served; none is
 rejected unless you ask for that.**
 
-> Status: **proof of concept.** Python **3.14+** only. 65 tests, passing on Linux and macOS; Windows runs in CI.
+> Status: **proof of concept.** Python **3.14+** only. 76 tests, passing on Linux and macOS; Windows runs in CI.
 > Requires the standard Python (CPython). Alternative implementations such as PyPy and GraalPy don't have
 > per-interpreter GILs, so spa-mc can't run on them.
 > Benchmark numbers so far come from a throttling laptop and are preliminary; see [results](results/README.md).
+
+It is used like `asyncio.start_server`; change one word and the server runs on every core:
 
 ```python
 import asyncio
 import spa_mc
 
-# myapp.py:  async def handle(reader, writer): ...   (a normal asyncio streams handler)
+
+async def handle(reader, writer):          # an ordinary asyncio streams handler
+    data = await reader.readline()
+    writer.write(data)
+    await writer.drain()
+
 
 async def main():
-    async with spa_mc.Engine('myapp:handle') as engine:   # workers='auto': sized to the machine, live
-        host, port = await engine.serve_tcp('0.0.0.0', 8080)
-        await asyncio.Event().wait()
+    server = await spa_mc.start_server(handle, '0.0.0.0', 8080)   # was: asyncio.start_server(...)
+    async with server:
+        await server.serve_forever()
 
-asyncio.run(main())
+
+if __name__ == '__main__':
+    asyncio.run(main())
 ```
+
+`start_server` takes the same arguments as `asyncio.start_server` (`host`, `port`, `limit`, `sock`, `backlog`,
+`start_serving`) plus any spa-mc setting below, and returns a server with the same methods (`serve_forever`,
+`start_serving`, `close`, `wait_closed`, `sockets`, `async with`); it is an `asyncio.AbstractServer`.
+`server.engine` gives the statistics (`stats()`, `router_stats()`).
+
+**One difference from asyncio, and it is fundamental:** each core runs the handler in its own interpreter.
+So the handler must be a module-level `async def` (not a lambda, closure or method; spa-mc says so up front),
+and it cannot share global variables or objects with the other cores or with the code that started the server.
+Share state through something outside the process (a database, a cache) or through spa-mc's zero-copy
+`memoryview` sharing. A handler defined in the script you run works; as with `multiprocessing`, keep start-up code
+under `if __name__ == '__main__':`, because each worker imports the script.
+
+For lower-level control, `spa_mc.Engine` is the class `start_server` is built on.
 
 ## What it does
 
@@ -52,8 +75,9 @@ asyncio.run(main())
   own CPU counts ignore (in a `--cpus=2` container on a 10-core host they report 10; spa-mc uses 2).
   A controller re-checks once a second and follows changes live: it parks workers when the budget shrinks and
   unparks or starts new ones when it grows. `workers=N` pins an exact number instead.
-- **Plain asyncio API.** Handlers are ordinary `async def handler(reader, writer)`; `spa_mc.current()` gives a handler its
-  worker id, core and limiter; `on_start='module:function'` runs per-worker setup.
+- **The asyncio API.** `spa_mc.start_server` mirrors `asyncio.start_server`; handlers are ordinary
+  `async def handler(reader, writer)`; `spa_mc.current()` gives a handler its worker id, core and limiter;
+  `on_start=` runs per-worker setup (a function, like the handler).
 
 ## Adapting to the machine
 
@@ -85,8 +109,8 @@ no design can finish more work than the hardware does. Bursts and short stalls a
 
 ## Results
 
-**Tests** (full logs in [results/](results/README.md)): 64/64 on Linux plus the container-limit test in a `--cpus=2`
-container, 62/62 on macOS (3 platform-specific skips).
+**Tests** (full logs in [results/](results/README.md)): 75/75 on Linux plus the container-limit test in a `--cpus=2`
+container, 73/73 on macOS (3 platform-specific skips).
 Among other things, they show 4 workers running CPU-bound requests **3.2x** faster than 1 in a single PID, 10 requests
 against a limit of 3 all completing without more than 3 ever running at once, a frozen worker receiving **no** new
 traffic, a busy-but-healthy loop **not** being throttled, and the worker count following a CPU budget that shrinks
@@ -143,7 +167,7 @@ Design notes: [docs/design.md](docs/design.md).
 
 ```bash
 uv sync --python 3.14
-uv run pytest -q             # 65 tests; skipped where the platform lacks the feature (pinning, reuseport, cgroup quota)
+uv run pytest -q             # 76 tests; skipped where the platform lacks the feature (pinning, reuseport, cgroup quota)
 ```
 
 ```bash
@@ -173,7 +197,9 @@ the cold reference, and records the factor next to every result. Pass `--baselin
 ## Layout
 
 ```
+src/spa_mc/server.py      start_server and Server: the asyncio-style front door
 src/spa_mc/engine.py      main interpreter: workers lifecycle, acceptor, router
+src/spa_mc/handlers.py    turns a handler function into a name each worker can import (including from __main__)
 src/spa_mc/worker.py      inside each subinterpreter: loop, concurrency limit, wait queue, watchdog, telemetry
 src/spa_mc/limiter.py     VegasLimiter (pure, reusable in any asyncio app)
 src/spa_mc/telemetry.py   shared per-worker records, CRC-checked

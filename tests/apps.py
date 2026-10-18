@@ -109,3 +109,8 @@ def take_worker_zeros_core_for_a_second(ctx: spa_mc.WorkerContext) -> None:
             loop.call_later(0.005, steal)
 
     loop.call_soon(steal)
+
+
+class Greeter:
+    async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        writer.write(b'hello\n')

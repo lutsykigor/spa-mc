@@ -22,6 +22,8 @@
 
 | module | runs in | responsibility |
 |---|---|---|
+| `spa_mc.server` | main interpreter | `start_server` and `Server`, the `asyncio.start_server` / `asyncio.Server` look-alikes over `Engine` |
+| `spa_mc.handlers` | both | turns a handler function into an importable `module:name`, and imports it in a worker |
 | `spa_mc.engine` | main interpreter | creates the subinterpreters and their threads, waits for `READY`, accepts connections, routes them, stops everything |
 | `spa_mc.worker` | each subinterpreter | the per-core asyncio loop: fd handoff (or `SO_REUSEPORT` listener), concurrency limit and FIFO wait queue, handler tasks, lag watchdog, telemetry publishing |
 | `spa_mc.limiter` | anywhere | `VegasLimiter`, a pure (clock-free) adaptive concurrency limit |
@@ -34,9 +36,17 @@
 **Python 3.14 only.** It is the first release where `concurrent.interpreters` is public, a `memoryview` is shareable,
 and `ctypes` loads in an isolated subinterpreter. 3.12 cannot run the design (see the verification page).
 
+**The public API copies asyncio's.** `spa_mc.start_server` takes `asyncio.start_server`'s arguments and returns an
+`asyncio.AbstractServer` with the same lifecycle: `close()` stops listening at once (the listener is unregistered from
+the loop before it is closed, because epoll otherwise keeps watching a descriptor number the next socket may reuse),
+`wait_closed()` waits until accepted connections are finished, and cancelling `serve_forever()` closes the server.
+asyncio's other extension points do not fit: a custom event loop (`loop_factory`) is still one thread, one core.
+
 **Code reaches workers by import, not by source templates.** The worker bootstrap sets `sys.path` from the parent
-and imports `spa_mc.worker`. Handlers are `"module:function"` strings resolved inside the worker,
-so they are ordinary, testable Python modules.
+and imports `spa_mc.worker`. Handlers can be passed as functions; the main interpreter turns them into
+`"module:qualname"`, rejecting lambdas, closures and methods with a clear error, since another interpreter cannot import
+those. A function in the script being run (`__main__`) is loaded in each worker from the script's file under the name
+`__spa_mc_main__`, the way `multiprocessing` uses `__mp_main__`, so the script's `if __name__ == '__main__':` block runs once.
 
 **Connections move as file descriptors.** All interpreters share the process FD (or Windows handle) table,
 so the router detaches the accepted socket and puts the integer on the worker's bounded

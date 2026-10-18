@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ctypes
-import importlib
 import inspect
 import json
 import socket
@@ -21,7 +20,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from concurrent import interpreters
 from dataclasses import dataclass
 
-from spa_mc import telemetry, topology
+from spa_mc import handlers, telemetry, topology
 from spa_mc.limiter import LimiterConfig, VegasLimiter
 from spa_mc.telemetry import WorkerState
 
@@ -133,9 +132,9 @@ class _Worker:
         self.loop = asyncio.get_running_loop()
         pinned = self._pin()
         _context = WorkerContext(self.config['worker_id'], self.core, pinned, self.limiter)
-        self.handler: Handler = _resolve(self.config['handler'])
+        self.handler: Handler = handlers.resolve(self.config['handler'], self.config['main_path'])
         if self.config['on_start']:
-            result = _resolve(self.config['on_start'])(_context)
+            result = handlers.resolve(self.config['on_start'], self.config['main_path'])(_context)
             if inspect.isawaitable(result):
                 await result
 
@@ -283,7 +282,7 @@ class _Worker:
         started = self.loop.time()
         dropped = False
         try:
-            reader = asyncio.StreamReader()
+            reader = asyncio.StreamReader(limit=self.config['stream_limit'])
             protocol = asyncio.StreamReaderProtocol(reader)
             transport, _ = await self.loop.connect_accepted_socket(lambda: protocol, sock)
             writer = asyncio.StreamWriter(transport, protocol, reader, self.loop)
@@ -333,11 +332,3 @@ def shed(sock: socket.socket, response: bytes, loop: asyncio.AbstractEventLoop) 
         sock.close()
         return
     loop.call_later(SHED_LINGER, sock.close)
-
-
-def _resolve(spec: str) -> Callable:
-    module_name, _, attr = spec.partition(':')
-    target = importlib.import_module(module_name)
-    for part in attr.split('.'):
-        target = getattr(target, part)
-    return target
