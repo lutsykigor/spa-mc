@@ -7,6 +7,8 @@ whichever worker the caller is running in.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import ctypes
 import importlib
 import inspect
 import json
@@ -15,7 +17,7 @@ import sys
 import time
 import traceback
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from concurrent import interpreters
 from dataclasses import dataclass
 
@@ -25,8 +27,12 @@ from spa_mc.telemetry import WorkerState
 
 STOP = -1
 SHED_LINGER = 1.0
-# Idle timer wake-ups run up to ~1 ms late on Linux and macOS; only off-CPU time beyond this counts as steal.
+# Idle timer wake-ups run up to ~1 ms late (on Windows once _fine_timers is on); only off-CPU time beyond this
+# counts as steal.
 TIMER_SLACK = 0.002
+# time.thread_time() advances in whole scheduler ticks on Windows (1/64 s), so one watchdog tick can under-read its
+# CPU time by that much; elsewhere it is precise.
+CPU_CLOCK_STEP = 1 / 64 if sys.platform == 'win32' else 0.0
 
 Handler = Callable[[asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]]
 
@@ -58,10 +64,28 @@ def worker_main(config_json: str, slab: memoryview, inbox: interpreters.Queue, d
     config = json.loads(config_json)
     slot = telemetry.SlotWriter(slab, config['worker_id'])
     try:
-        asyncio.run(_Worker(config, slot, inbox, doorbell_fd).run())
+        with _fine_timers():
+            asyncio.run(_Worker(config, slot, inbox, doorbell_fd).run())
     except BaseException:
         _publish_failed(slot)
         raise
+
+
+@contextlib.contextmanager
+def _fine_timers() -> Iterator[None]:
+    """Windows wakes event loops on a ~15.6 ms clock tick by default; ask for 1 ms while the worker runs.
+
+    Otherwise every short sleep overshoots by ~10 ms, which the watchdog would read as loop lag and steal.
+    """
+    if sys.platform != 'win32':
+        yield
+        return
+    winmm = ctypes.WinDLL('winmm')
+    winmm.timeBeginPeriod(1)
+    try:
+        yield
+    finally:
+        winmm.timeEndPeriod(1)
 
 
 def _publish_failed(slot: telemetry.SlotWriter) -> None:
@@ -280,7 +304,7 @@ class _Worker:
 
     async def _watchdog(self) -> None:
         interval = self.config['watchdog_interval']
-        threshold = self.config['stall_threshold']
+        threshold = self.config['stall_threshold'] + CPU_CLOCK_STEP
         last_wall, last_cpu = self.loop.time(), time.thread_time()
         while True:
             await asyncio.sleep(interval)

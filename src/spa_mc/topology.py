@@ -22,8 +22,10 @@ def available_cpus() -> list[int]:
 
 
 def physical_cpus() -> list[int]:
-    """One logical CPU per physical core (SMT siblings collapsed), Linux only; else all CPUs."""
+    """One logical CPU per physical core (SMT siblings collapsed) on Linux and Windows; else all CPUs."""
     cpus = available_cpus()
+    if sys.platform == 'win32':
+        return _windows_physical_cpus(cpus)
     if not sys.platform.startswith('linux'):
         return cpus
     chosen, seen = [], set()
@@ -46,6 +48,37 @@ def cpu_budget() -> list[int]:
     if quota is not None:
         cpus = cpus[: max(1, math.ceil(quota))]
     return cpus
+
+
+_RELATION_PROCESSOR_CORE = 0
+
+
+def _windows_physical_cpus(cpus: list[int]) -> list[int]:
+    """The lowest allowed logical CPU of each physical core in processor group 0; `cpus` unchanged if unknown."""
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    query = kernel32.GetLogicalProcessorInformationEx
+    query.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    query.restype = ctypes.c_int
+    size = ctypes.c_uint32(0)
+    query(_RELATION_PROCESSOR_CORE, None, ctypes.byref(size))
+    buffer = ctypes.create_string_buffer(size.value)
+    if not size.value or not query(_RELATION_PROCESSOR_CORE, buffer, ctypes.byref(size)):
+        return cpus
+    allowed = set(cpus)
+    chosen = []
+    offset = 0
+    # SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX: Relationship, Size, then PROCESSOR_RELATIONSHIP whose first
+    # GROUP_AFFINITY (Mask, Group) starts 32 bytes in.
+    while offset < size.value:
+        record_size = int.from_bytes(buffer.raw[offset + 4 : offset + 8], 'little')
+        mask = int.from_bytes(buffer.raw[offset + 32 : offset + 40], 'little')
+        group = int.from_bytes(buffer.raw[offset + 40 : offset + 42], 'little')
+        if group == 0:
+            core = [cpu for cpu in range(WINDOWS_GROUP_SIZE) if mask >> cpu & 1 and cpu in allowed]
+            if core:
+                chosen.append(core[0])
+        offset += record_size or size.value
+    return sorted(chosen) or cpus
 
 
 CGROUP_ROOT = Path('/sys/fs/cgroup')

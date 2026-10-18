@@ -30,7 +30,8 @@ def open_fds() -> int | None:
 
 def test_workers_are_separate_interpreters_and_threads_in_one_process():
     async def scenario():
-        async with spa_mc.Engine('apps:whoami', workers=4) as engine:
+        # Round-robin so every worker is reached: least-loaded may rightly avoid one with a momentary lag spike.
+        async with spa_mc.Engine('apps:whoami', workers=4, routing='round_robin') as engine:
             address = await engine.serve_tcp()
             replies = await asyncio.gather(*(request(address, b'?\n') for _ in range(40)))
             return [reply.split() for reply, _ in replies]
