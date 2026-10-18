@@ -25,6 +25,8 @@ from spa_mc.telemetry import WorkerState
 
 STOP = -1
 SHED_LINGER = 1.0
+# Idle timer wake-ups run up to ~1 ms late on Linux and macOS; only off-CPU time beyond this counts as steal.
+TIMER_SLACK = 0.002
 
 Handler = Callable[[asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]]
 
@@ -98,6 +100,7 @@ class _Worker:
         self.stalls = 0
         self.loop_lag = 0.0
         self.max_loop_lag = 0.0
+        self.steal = 0.0
         self.tasks: set[asyncio.Task] = set()
         self.stopping = asyncio.Event()
 
@@ -152,6 +155,7 @@ class _Worker:
             rtt_noload=limiter.rtt_noload if limiter else 0.0,
             loop_lag=self.loop_lag,
             max_loop_lag=self.max_loop_lag,
+            steal=self.steal,
         )
 
     def _pin(self) -> bool:
@@ -287,6 +291,7 @@ class _Worker:
             last_wall, last_cpu = wall, cpu
             self.loop_lag = max(0.0, elapsed - interval)
             self.max_loop_lag = max(self.max_loop_lag, self.loop_lag)
+            self.steal += max(0.0, off_cpu - TIMER_SLACK)
             if off_cpu >= threshold:
                 self.stalls += 1
                 if self.limiter:

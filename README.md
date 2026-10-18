@@ -4,7 +4,7 @@
 plus per-core adaptive concurrency control and load-aware connection routing. Every request is served; none is
 rejected unless you ask for that.**
 
-> Status: **proof of concept.** CPython **3.14+** only. 38 tests, passing on Linux and macOS; Windows runs in CI.
+> Status: **proof of concept.** CPython **3.14+** only. 65 tests, passing on Linux and macOS; Windows runs in CI.
 > Benchmark numbers so far come from a throttling laptop and are preliminary; see [results](results/README.md).
 
 ```python
@@ -14,7 +14,7 @@ import spa_mc
 # myapp.py:  async def handle(reader, writer): ...   (a normal asyncio streams handler)
 
 async def main():
-    async with spa_mc.Engine('myapp:handle', workers=4) as engine:
+    async with spa_mc.Engine('myapp:handle') as engine:   # workers='auto': sized to the machine, live
         host, port = await engine.serve_tcp('0.0.0.0', 8080)
         await asyncio.Event().wait()
 
@@ -45,8 +45,29 @@ asyncio.run(main())
 - **Routing that sees a frozen core now, not afterwards.** Workers publish a heartbeat; the router skips a worker whose
   heartbeat is stale, and otherwise ranks by outstanding work scaled by recent loop lag.
   Alternatives: `routing='round_robin'`, or `routing='reuseport'` (Linux; kernel `SO_REUSEPORT`, no router).
+- **Sized to the machine, and kept sized.** `workers='auto'` (the default) starts one worker per CPU the process may
+  really use: allowed CPUs (affinity mask), one per physical core, capped by the **container CPU limit**, which Python's
+  own CPU counts ignore (in a `--cpus=2` container on a 10-core host they report 10; spa-mc uses 2).
+  A controller re-checks once a second and follows changes live: it parks workers when the budget shrinks and
+  unparks or starts new ones when it grows. `workers=N` pins an exact number instead.
 - **Plain asyncio API.** Handlers are ordinary `async def handler(reader, writer)`; `spa_mc.current()` gives a handler its
   worker id, core and limiter; `on_start='module:function'` runs per-worker setup.
+
+## Adapting to the machine
+
+| setting | default | effect |
+|---|---|---|
+| `workers` | `'auto'` | `'auto'`: one worker per usable CPU, re-checked every `adapt_interval` (1 s) and followed live. An int fixes the count |
+| `pin` | `True` | pin each worker thread to its own CPU (Linux, Windows) |
+| `park_on_steal` | `False` | opt-in: stop routing to a worker whose CPU is being taken by other processes, and bring it back when the CPU is free again |
+
+Why parking is off by default: when other processes compete for every core, the OS shares CPU time fairly among
+runnable threads, so parking workers mostly hands their share to the competitors. Measured with 10 busy-loop processes on
+a 10-CPU machine, parking cut throughput by **18%** and raised median latency by 57%, while improving p99 by 20%
+(with 4 competitors: −2% throughput, p99 −13%). Use it when tail latency matters more than throughput.
+How a stolen CPU is detected: each worker compares wall-clock time with its own CPU time; time spent off the CPU beyond
+normal timer slack is *steal*. An idle or merely busy worker reads 0; a worker sharing its CPU with two busy processes
+reads about 0.5 ([probe](bench/probes/steal_signal.py)).
 
 ## Overload behaviour
 
@@ -62,10 +83,12 @@ no design can finish more work than the hardware does. Bursts and short stalls a
 
 ## Results
 
-**Tests** (full logs in [results/](results/README.md)): 38/38 on Linux, 36/36 on macOS (2 platform-specific skips).
+**Tests** (full logs in [results/](results/README.md)): 64/64 on Linux plus the container-limit test in a `--cpus=2`
+container, 62/62 on macOS (3 platform-specific skips).
 Among other things, they show 4 workers running CPU-bound requests **3.2x** faster than 1 in a single PID, 10 requests
 against a limit of 3 all completing without more than 3 ever running at once, a frozen worker receiving **no** new
-traffic, and a busy-but-healthy loop **not** being throttled.
+traffic, a busy-but-healthy loop **not** being throttled, and the worker count following a CPU budget that shrinks
+and grows while the engine runs.
 
 **Benchmarks** are preliminary: a fanless laptop that throttled (calibration drifted 49 → 96 ms) produced two runs that
 agree on the following:
@@ -77,7 +100,7 @@ agree on the following:
 | **spa-mc** | **2.25x** | **28–35% lower** |
 | asyncio + threads (free-threaded 3.14t) | 2.05–2.1x | lower still |
 
-With a simulated noisy neighbour (worker 0 loses its core 60 ms out of every 250 ms), spa-mc's load-aware routing plus valve
+With a simulated noisy neighbour (worker 0 loses its core 60 ms out of every 250 ms), spa-mc's load-aware routing plus limit
 cut p99 by **40–53%** against blind round-robin at equal throughput.
 Free-threaded CPython is the honest yardstick here: on this workload spa-mc does not beat it.
 These runs predate queue-by-default; they shed no requests except 1–73 in the round-robin noisy scenario.
@@ -104,8 +127,10 @@ Full table with evidence: [docs/research-verification.md](docs/research-verifica
 
 - CPython 3.14+. Pinning on Linux and Windows (first 64 CPUs); macOS has no thread-affinity API, so workers run unpinned there.
 - The acceptor is one asyncio loop on the main interpreter; it caps the *connection rate*. Use `reuseport` on Linux to remove it.
-- Admission is per connection; keep-alive protocols should admit per request via `spa_mc.current().limiter`.
-- Requests already admitted to a worker when it stalls still wait out the stall; the valve and router protect new work.
+- The limit counts connections; keep-alive protocols should limit per request via `spa_mc.current().limiter`.
+- Requests already on a worker when it stalls still wait out the stall; routing and the limit protect new work.
+- The CPU budget is re-read once a second, so a changed container limit takes up to `adapt_interval` to apply.
+  With `routing='reuseport'` the kernel picks the worker, so the count is fixed at start-up.
 - Under sustained overload, `queue` mode trades errors for waiting; set `max_queue_wait` or `overload='shed'` if callers need a bound.
 - Telemetry is advisory routing data: CRC-checked against torn reads, never used for correctness.
 - Proof of concept: no TLS helpers, no HTTP layer, no production hardening beyond what the tests cover.
@@ -116,7 +141,7 @@ Design notes: [docs/design.md](docs/design.md).
 
 ```bash
 uv sync --python 3.14
-uv run pytest -q             # 38 tests; on macOS 2 are skipped (pinning, reuseport)
+uv run pytest -q             # 65 tests; skipped where the platform lacks the feature (pinning, reuseport, cgroup quota)
 ```
 
 ```bash
@@ -150,7 +175,8 @@ src/spa_mc/engine.py      main interpreter: workers lifecycle, acceptor, router
 src/spa_mc/worker.py      inside each subinterpreter: loop, concurrency limit, wait queue, watchdog, telemetry
 src/spa_mc/limiter.py     VegasLimiter (pure, reusable in any asyncio app)
 src/spa_mc/telemetry.py   shared per-worker records, CRC-checked
-src/spa_mc/topology.py    CPU discovery and per-thread pinning
+src/spa_mc/topology.py    CPU budget (affinity, physical cores, container CPU limit) and per-thread pinning
+src/spa_mc/autoscale.py   decides how many workers take traffic (budget changes, optional steal parking)
 tests/                   unit + integration tests (tests/apps.py holds the handlers workers load)
 bench/                   benchmark harness, servers for each concurrency model, probes for the verification
 docs/                    design notes and the verification of the source architecture

@@ -20,7 +20,7 @@ from enum import IntEnum
 STRIDE = 128
 
 _CRC = struct.Struct('<I')
-_BODY = struct.Struct('<IIIIIQQQQddddd')
+_BODY = struct.Struct('<IIIIIQQQQdddddd')
 RECORD = _CRC.size + _BODY.size
 assert RECORD <= STRIDE
 _NEVER_WRITTEN = bytes(RECORD)
@@ -50,6 +50,7 @@ class WorkerStats:
     rtt_noload_ms: float
     loop_lag_ms: float
     max_loop_lag_ms: float
+    steal_s: float
     heartbeat: float
 
     @property
@@ -82,6 +83,7 @@ class SlotWriter:
         loop_lag: float,
         max_loop_lag: float,
         queued: int = 0,
+        steal: float = 0.0,
     ) -> None:
         body = _BODY.pack(
             int(state),
@@ -97,6 +99,7 @@ class SlotWriter:
             0.0 if rtt_noload == float('inf') else rtt_noload * 1000.0,
             loop_lag * 1000.0,
             max_loop_lag * 1000.0,
+            steal,
             time.monotonic(),
         )
         self._buf[self._offset : self._offset + RECORD] = _CRC.pack(zlib.crc32(body)) + body
@@ -124,7 +127,8 @@ def try_read(buffer: memoryview, worker_id: int, max_retries: int = 64) -> Worke
 
 
 def _to_stats(worker_id: int, body: tuple) -> WorkerStats:
-    state, in_flight, queued, limit, core, received, completed, shed, stalls, rtt, noload, lag, max_lag, beat = body
+    state, in_flight, queued, limit, core, received, completed, shed, stalls = body[:9]
+    rtt, noload, lag, max_lag, steal, beat = body[9:]
     return WorkerStats(
         worker_id=worker_id,
         state=WorkerState(state),
@@ -140,5 +144,6 @@ def _to_stats(worker_id: int, body: tuple) -> WorkerStats:
         rtt_noload_ms=noload,
         loop_lag_ms=lag,
         max_loop_lag_ms=max_lag,
+        steal_s=steal,
         heartbeat=beat,
     )

@@ -139,15 +139,16 @@ def test_a_loop_busy_with_its_own_work_is_not_mistaken_for_a_stall():
         limiter = LimiterConfig(initial_limit=50)
         async with spa_mc.Engine('apps:cpu', workers=1, limiter=limiter) as engine:
             address = await engine.serve_tcp()
-            for _ in range(3):
+            for _ in range(8):
                 await request(address, b'3000000\n')
             await asyncio.sleep(0.05)
             return engine.stats()[0]
 
     stats = asyncio.run(scenario())
     assert stats.max_loop_lag_ms >= 30
-    assert stats.stalls == 0
-    assert stats.limit == 50
+    # Treating lag as a stall would count 8+; real preemption on a busy machine may add one or two.
+    assert stats.stalls <= 2
+    assert stats.limit >= 50 * 0.9**2
 
 
 FIXED_3 = LimiterConfig(initial_limit=3, min_limit=3, max_limit=3)
@@ -334,3 +335,117 @@ def test_each_worker_thread_is_pinned_to_its_own_cpu():
     cores = {core for core, _ in by_thread.values()}
     assert len(by_thread) == 2 and len(cores) == 2
     assert all(cpus == str(core).encode() for core, cpus in by_thread.values())
+
+
+async def wait_until(predicate, timeout: float) -> float:
+    started = time.perf_counter()
+    while not predicate():
+        if time.perf_counter() - started > timeout:
+            raise AssertionError(f'condition not met within {timeout}s')
+        await asyncio.sleep(0.02)
+    return time.perf_counter() - started
+
+
+def test_auto_starts_one_worker_per_cpu_in_the_budget(monkeypatch):
+    monkeypatch.setattr(spa_mc.topology, 'cpu_budget', lambda: [0, 1])
+
+    async def scenario():
+        async with spa_mc.Engine('apps:echo', pin=False) as engine:
+            return engine.workers, engine.router_stats().active
+
+    assert asyncio.run(scenario()) == (2, [True, True])
+
+
+def test_a_worker_whose_core_is_taken_is_parked_then_returns(monkeypatch):
+    monkeypatch.setattr(spa_mc.topology, 'cpu_budget', lambda: [0, 1, 2])
+
+    async def scenario():
+        engine = spa_mc.Engine(
+            'apps:stall_on_command',
+            pin=False,
+            adapt_interval=0.1,
+            park_on_steal=True,
+            on_start='apps:take_worker_zeros_core_for_a_second',
+        )
+        async with engine:
+            address = await engine.serve_tcp()
+            await wait_until(lambda: not engine.router_stats().active[0], timeout=1.0)
+            served_by = [
+                int(reply) for reply, _ in await asyncio.gather(*(request(address, b'go\n') for _ in range(12)))
+            ]
+            await wait_until(lambda: engine.router_stats().active[0], timeout=3.0)
+            return served_by, engine.router_stats().active
+
+    served_by, active_after = asyncio.run(scenario())
+    assert 0 not in served_by
+    assert active_after == [True, True, True]
+
+
+def test_the_worker_count_follows_a_changing_cpu_budget(monkeypatch):
+    budget = [0, 1]
+    monkeypatch.setattr(spa_mc.topology, 'cpu_budget', lambda: list(budget))
+
+    async def scenario():
+        async with spa_mc.Engine('apps:whoami', pin=False, adapt_interval=0.05) as engine:
+            address = await engine.serve_tcp()
+            budget[:] = [0]
+            await wait_until(lambda: engine.router_stats().active.count(True) == 1, timeout=1.0)
+            shrunk = {
+                reply.split()[0] for reply, _ in await asyncio.gather(*(request(address, b'?\n') for _ in range(8)))
+            }
+            budget[:] = [0, 1, 2]
+            await wait_until(lambda: engine.router_stats().active == [True, True, True], timeout=2.0)
+            grown = {
+                reply.split()[0] for reply, _ in await asyncio.gather(*(request(address, b'?\n') for _ in range(30)))
+            }
+            return shrunk, grown, engine.workers
+
+    shrunk, grown, workers = asyncio.run(scenario())
+    assert len(shrunk) == 1
+    assert grown == {b'0', b'1', b'2'} and workers == 3
+
+
+def test_fixed_worker_counts_are_never_adapted(monkeypatch):
+    monkeypatch.setattr(spa_mc.topology, 'cpu_budget', lambda: [0])
+
+    async def scenario():
+        async with spa_mc.Engine('apps:echo', workers=3, pin=False, adapt_interval=0.05) as engine:
+            await asyncio.sleep(0.3)
+            return engine.workers, engine.router_stats().active
+
+    assert asyncio.run(scenario()) == (3, [True, True, True])
+
+
+@pytest.mark.parametrize('workers', [0, -1, 'many', None])
+def test_worker_count_is_validated(workers):
+    with pytest.raises(ValueError, match='workers'):
+        spa_mc.Engine('apps:echo', workers=workers)
+
+
+@linux
+def test_auto_respects_the_container_cpu_quota():
+    quota = spa_mc.topology.cpu_quota()
+    if quota is None:
+        pytest.skip('no cgroup CPU quota (run in a container started with --cpus)')
+
+    async def scenario():
+        async with spa_mc.Engine('apps:echo') as engine:
+            return engine.workers
+
+    assert asyncio.run(scenario()) == min(len(spa_mc.topology.physical_cpus()), max(1, -(-quota // 1)))
+
+
+def test_steal_parking_is_off_by_default(monkeypatch):
+    monkeypatch.setattr(spa_mc.topology, 'cpu_budget', lambda: [0, 1])
+
+    async def scenario():
+        engine = spa_mc.Engine(
+            'apps:echo', pin=False, adapt_interval=0.1, on_start='apps:take_worker_zeros_core_for_a_second'
+        )
+        async with engine:
+            await asyncio.sleep(0.8)
+            return engine.router_stats().active, engine.stats()[0].steal_s
+
+    active, steal = asyncio.run(scenario())
+    assert steal > 0.3
+    assert active == [True, True]

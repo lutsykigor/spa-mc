@@ -94,3 +94,18 @@ async def peak_concurrency(reader: asyncio.StreamReader, writer: asyncio.StreamW
         _active -= 1
     writer.write(f'{_peak}\n'.encode())
     await writer.drain()
+
+
+def take_worker_zeros_core_for_a_second(ctx: spa_mc.WorkerContext) -> None:
+    """Keeps worker 0 off its CPU 15 ms out of every 20 ms for about one second, then leaves it alone."""
+    if ctx.worker_id != 0:
+        return
+    loop = asyncio.get_running_loop()
+    until = loop.time() + 1.0
+
+    def steal() -> None:
+        time.sleep(0.015)
+        if loop.time() < until:
+            loop.call_later(0.005, steal)
+
+    loop.call_soon(steal)

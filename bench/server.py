@@ -2,7 +2,9 @@
 
 Prints `READY <port>`, serves until its stdin is closed, then shuts down (works on Linux, macOS and Windows).
 
-usage: server.py MODE WORKERS [--noisy] [--routing R] [--no-limiter]
+usage: server.py MODE WORKERS [--noisy] [--routing R] [--no-limiter] [--park] [--adapt-interval S]
+
+WORKERS is a number, or `auto` for spa-mc.
 """
 
 import argparse
@@ -22,11 +24,15 @@ import spa_mc
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', choices=['single', 'threads', 'prefork', 'spa-mc'])
-    parser.add_argument('workers', type=int)
+    parser.add_argument('workers')
     parser.add_argument('--noisy', action='store_true')
     parser.add_argument('--routing', default='least_loaded')
     parser.add_argument('--no-limiter', action='store_true')
+    parser.add_argument('--park', action='store_true')
+    parser.add_argument('--adapt-interval', type=float, default=1.0)
     args = parser.parse_args()
+    if args.workers != 'auto' or args.mode != 'spa-mc':
+        args.workers = int(args.workers)
     if args.mode == 'prefork':
         prefork(args.workers)
     else:
@@ -40,6 +46,8 @@ async def serve(args: argparse.Namespace) -> None:
         engine = spa_mc.Engine(
             'bench_app:handle',
             workers=args.workers,
+            park_on_steal=args.park,
+            adapt_interval=args.adapt_interval,
             routing=args.routing,
             limiter=limiter,
             on_start=on_start,
@@ -48,6 +56,8 @@ async def serve(args: argparse.Namespace) -> None:
         _, port = await engine.serve_tcp('127.0.0.1', 0, backlog=4096)
         announce(port)
         await wait_for_stdin_eof()
+        active = engine.router_stats().active
+        print(f'  spa-mc: {active.count(True)} of {len(active)} workers active at the end', file=sys.stderr)
         await engine.stop()
         return
     handler = bench_app.handle

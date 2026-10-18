@@ -27,7 +27,7 @@ HERE = Path(__file__).resolve().parent
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--suite', choices=['throughput', 'noisy', 'all'], default='all')
+    parser.add_argument('--suite', choices=['throughput', 'noisy', 'hog', 'all'], default='all')
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--rounds', type=int, default=3)
     parser.add_argument('--duration', type=float, default=8.0)
@@ -37,6 +37,7 @@ def main() -> None:
     parser.add_argument('--cooldown', type=float, default=15.0)
     parser.add_argument('--throttle-tolerance', type=float, default=0.10)
     parser.add_argument('--baseline-ms', type=float, help='cold-machine calibration time; measured now if omitted')
+    parser.add_argument('--hogs', type=int, default=os.cpu_count(), help='busy-loop processes in hog: scenarios')
     parser.add_argument('--only', help='run only scenarios whose name contains this text')
     parser.add_argument('--python-ft', help='free-threaded interpreter for the threads-ft scenario')
     parser.add_argument('--out', default=str(HERE.parent / 'results' / 'results.json'))
@@ -49,7 +50,7 @@ def main() -> None:
     for round_no in range(args.rounds):
         for name, command in scenarios:
             factor = wait_until_cool(baseline, args.throttle_tolerance, args.cooldown)
-            run = measure(command, args)
+            run = measure(command, args, hogs=args.hogs if name.startswith('hog:') else 0)
             run['calibration_factor'] = round(factor, 3)
             results[name].append(run)
             log(f'round {round_no + 1} {name:<28} {summary(run)}  (cpu x{factor:.2f})')
@@ -90,6 +91,13 @@ def build_scenarios(args: argparse.Namespace) -> list[tuple[str, list[str]]]:
             ),
             (f'noisy:spa-mc({n})-leastloaded-valve', [py, server, 'spa-mc', n, '--noisy']),
         ]
+    if args.suite == 'hog':
+        # Competing processes on every core: does parking workers whose core is taken pay off?
+        auto = [py, server, 'spa-mc', 'auto', '--adapt-interval', '0.5']
+        scenarios += [
+            ('hog:spa-mc(auto)-parking', [*auto, '--park']),
+            ('hog:spa-mc(auto)-no-parking', auto),
+        ]
     if args.only:
         scenarios = [(name, cmd) for name, cmd in scenarios if args.only in name]
     return scenarios
@@ -102,6 +110,12 @@ def calibrate(parallel: int = 4) -> float:
         pool.map(_spin, range(parallel))
         all_core = max(pool.map(_spin, range(parallel)))
     return max(single, all_core)
+
+
+def _hog(seconds: float) -> None:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        pass
 
 
 def _spin(_: int = 0) -> float:
@@ -123,7 +137,7 @@ def wait_until_cool(baseline: float, tolerance: float, rest: float) -> float:
     return factor
 
 
-def measure(command: list[str], args: argparse.Namespace) -> dict:
+def measure(command: list[str], args: argparse.Namespace, hogs: int = 0) -> dict:
     env = {**os.environ, 'PYTHONPATH': str(HERE.parent / 'src')}
     server = subprocess.Popen(
         command, cwd=HERE, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=sys.stderr, text=True, env=env
@@ -133,8 +147,17 @@ def measure(command: list[str], args: argparse.Namespace) -> dict:
         if not line.startswith('READY'):
             raise RuntimeError(f'server did not start: {command}')
         port = int(line.split()[1])
-        with multiprocessing.get_context('spawn').Pool(args.clients) as pool:
+        context = multiprocessing.get_context('spawn')
+        hog_processes = [context.Process(target=_hog, args=(args.duration + 3,)) for _ in range(hogs)]
+        for hog in hog_processes:
+            hog.start()
+        # Let the engine's adaptation see the competition before measuring.
+        time.sleep(2.0 if hogs else 0.0)
+        with context.Pool(args.clients) as pool:
             parts = pool.starmap(load_client, [(port, args.concurrency, args.duration, args.work)] * args.clients)
+        for hog in hog_processes:
+            hog.terminate()
+            hog.join()
     finally:
         server.stdin.close()
         try:

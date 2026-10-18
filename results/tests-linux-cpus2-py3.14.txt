@@ -1,0 +1,28 @@
+os.process_cpu_count(): 10 | spa-mc cpu_quota(): 2.0 | cpu_budget(): [0, 1]
+============================= test session starts ==============================
+platform linux -- Python 3.14.8, pytest-9.1.1, pluggy-1.7.0 -- /usr/local/bin/python
+rootdir: /w
+configfile: pyproject.toml
+testpaths: tests
+collecting ... collected 65 items / 47 deselected / 18 selected
+
+tests/test_autoscale.py::test_quiet_workers_need_no_change PASSED        [  5%]
+tests/test_autoscale.py::test_a_worker_is_parked_only_after_sustained_steal PASSED [ 11%]
+tests/test_autoscale.py::test_a_single_spike_does_not_park PASSED        [ 16%]
+tests/test_autoscale.py::test_the_most_stolen_worker_is_parked_first_one_at_a_time PASSED [ 22%]
+tests/test_autoscale.py::test_the_last_active_worker_is_never_parked PASSED [ 27%]
+tests/test_autoscale.py::test_a_parked_worker_returns_after_its_core_stays_quiet PASSED [ 33%]
+tests/test_autoscale.py::test_steal_parking_is_off_by_default PASSED     [ 38%]
+tests/test_autoscale.py::test_a_shrinking_budget_parks_the_excess_immediately PASSED [ 44%]
+tests/test_autoscale.py::test_a_growing_budget_spawns_and_unparks_within_it PASSED [ 50%]
+tests/test_autoscale.py::test_parked_workers_stay_parked_while_the_budget_has_no_room PASSED [ 55%]
+tests/test_engine.py::test_auto_starts_one_worker_per_cpu_in_the_budget PASSED [ 61%]
+tests/test_engine.py::test_the_worker_count_follows_a_changing_cpu_budget PASSED [ 66%]
+tests/test_engine.py::test_auto_respects_the_container_cpu_quota PASSED  [ 72%]
+tests/test_topology.py::test_cgroup_v2_quota_is_read_from_cpu_max PASSED [ 77%]
+tests/test_topology.py::test_cgroup_v1_cfs_quota PASSED                  [ 83%]
+tests/test_topology.py::test_cgroup_v1_unlimited_quota PASSED            [ 88%]
+tests/test_topology.py::test_no_cgroup_information_means_no_quota PASSED [ 94%]
+tests/test_topology.py::test_budget_is_capped_by_the_quota_and_never_below_one PASSED [100%]
+
+====================== 18 passed, 47 deselected in 0.42s =======================

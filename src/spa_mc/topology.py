@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import math
 import os
 import sys
 from pathlib import Path
@@ -36,6 +37,76 @@ def physical_cpus() -> list[int]:
             seen.add(key)
             chosen.append(cpu)
     return chosen
+
+
+def cpu_budget() -> list[int]:
+    """The CPUs workers should use: one per physical core, no more than the container's CPU quota allows."""
+    cpus = physical_cpus()
+    quota = cpu_quota()
+    if quota is not None:
+        cpus = cpus[: max(1, math.ceil(quota))]
+    return cpus
+
+
+CGROUP_ROOT = Path('/sys/fs/cgroup')
+PROC_CGROUP = Path('/proc/self/cgroup')
+
+
+def cpu_quota(cgroup_root: Path = CGROUP_ROOT, proc_cgroup: Path = PROC_CGROUP) -> float | None:
+    """CPUs' worth of time the process's cgroup allows (v2 `cpu.max` or v1 CFS quota); None when unlimited or unknown.
+
+    Python's own CPU counts ignore this, so a container limited to 2 CPUs on a 64-core host otherwise looks like 64.
+    """
+    try:
+        entries = proc_cgroup.read_text().splitlines()
+    except OSError:
+        return None
+    limits = []
+    for entry in entries:
+        hierarchy, controllers, path = entry.split(':', 2)
+        if hierarchy == '0':
+            limits += _cgroup_v2_limits(cgroup_root, path)
+        elif 'cpu' in controllers.split(','):
+            limits += _cgroup_v1_limits(cgroup_root / controllers, path)
+    return min(limits) if limits else None
+
+
+def _cgroup_v2_limits(root: Path, path: str) -> list[float]:
+    limits = []
+    for directory in _cgroup_dirs(root, path):
+        try:
+            quota, period = (directory / 'cpu.max').read_text().split()
+        except OSError, ValueError:
+            continue
+        if quota != 'max':
+            limits.append(int(quota) / int(period))
+    return limits
+
+
+def _cgroup_v1_limits(root: Path, path: str) -> list[float]:
+    limits = []
+    for directory in _cgroup_dirs(root, path):
+        try:
+            quota = int((directory / 'cpu.cfs_quota_us').read_text())
+            period = int((directory / 'cpu.cfs_period_us').read_text())
+        except OSError, ValueError:
+            continue
+        if quota > 0 and period > 0:
+            limits.append(quota / period)
+    return limits
+
+
+def _cgroup_dirs(root: Path, path: str) -> list[Path]:
+    """The process's cgroup and its ancestors; a limit set on any of them applies."""
+    directory = root / path.lstrip('/')
+    if not directory.is_dir():
+        # Inside a container the host-side path is not mounted; the container's own cgroup is the root.
+        return [root]
+    dirs = [directory]
+    while directory != root and root in directory.parents:
+        directory = directory.parent
+        dirs.append(directory)
+    return dirs
 
 
 def pin_current_thread(cpu: int) -> bool:

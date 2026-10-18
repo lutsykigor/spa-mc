@@ -32,3 +32,12 @@ jobs:
         run: uv run pytest -v -m timing
       - name: Benchmark harness smoke run (functional check, numbers are not meaningful on CI)
         run: uv run python bench/run_bench.py --rounds 1 --duration 1 --cooldown 0 --baseline-ms 100000 --out bench-smoke.json
+
+  container-quota:
+    # The container CPU limit is invisible to Python's CPU counts; spa-mc must size itself to it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: >-
+          docker run --rm --cpus=2 -v "$PWD":/src:ro python:3.14-slim sh -c
+          'cp -r /src /w && cd /w && pip install -q pytest -e . && python -m pytest -v -k "quota or budget or auto"'

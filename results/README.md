@@ -4,8 +4,9 @@
 
 | platform | Python | result | log |
 |---|---|---|---|
-| Linux (Docker `python:3.14-slim`, arm64, 10 vCPUs) | 3.14.8 | **38 passed** | [tests-linux-py3.14.txt](tests-linux-py3.14.txt) |
-| macOS (Apple M5) | 3.14.8 | **36 passed, 2 skipped** (pinning and `reuseport` need Linux/Windows) | [tests-macos-py3.14.txt](tests-macos-py3.14.txt) |
+| Linux (Docker `python:3.14-slim`, arm64, 10 vCPUs) | 3.14.8 | **64 passed, 1 skipped** (the container-limit test, run separately below) | [tests-linux-py3.14.txt](tests-linux-py3.14.txt) |
+| Linux, container started with `--cpus=2` | 3.14.8 | container-limit, budget and auto-sizing tests **pass**; spa-mc sizes to 2 workers while Python reports 10 CPUs | [tests-linux-cpus2-py3.14.txt](tests-linux-cpus2-py3.14.txt) |
+| macOS (Apple M5) | 3.14.8 | **62 passed, 3 skipped** (pinning, `reuseport` and cgroup limits need Linux/Windows) | [tests-macos-py3.14.txt](tests-macos-py3.14.txt) |
 | Windows | 3.14 | via GitHub Actions on every push ([workflow](../.github/workflows/tests.yml)); no local run yet | — |
 
 The suite was run three to five times per platform at each stage. Repetition caught one intermittent failure: a torn
@@ -28,7 +29,11 @@ What the suite proves, in short:
   or interpreters behind; `stop()` releases threads, interpreters and descriptors;
 - a worker frozen in the middle of a telemetry write does not stop the acceptor;
 - checksummed telemetry reads under a truly parallel writer are never torn (plain reads tear 1–2% of the time; see `bench/probes/torn_reads.py`);
-- on Linux (and Windows), each worker thread's real OS affinity is exactly its assigned CPU.
+- on Linux (and Windows), each worker thread's real OS affinity is exactly its assigned CPU;
+- `workers='auto'` starts one worker per CPU in the budget, honours a container CPU limit, and follows a budget that
+  shrinks (workers parked, traffic avoids them) and grows (workers unparked, new ones started) while running;
+- with `park_on_steal=True` a worker whose CPU is taken stops receiving traffic and returns once the CPU is free;
+  by default it keeps serving.
 
 ## Benchmarks: preliminary, do not quote
 
@@ -63,6 +68,22 @@ What both runs agree on, and no more:
   restrictions at all. On this workload spa-mc has no clear advantage over it.
 - Under the simulated noisy neighbour, load-aware routing plus the valve cut p99 by 40–53% at equal throughput,
   trading a higher median (the stalled worker is avoided, so the others queue a little more).
+
+### Does parking workers off a contended CPU pay off?
+
+Same laptop, interleaved rounds, median of 3, `workers='auto'` (10 workers), external busy-loop processes on all CPUs:
+
+| competing processes | parking | req/s | p50 ms | p99 ms | workers active at the end |
+|---:|---|---:|---:|---:|---|
+| 10 | on | 1570 | 18.6 | 167 | 2–4 of 10 |
+| 10 | off | 1907 | 11.9 | 209 | 10 of 10 |
+| 4 | on | 2141 | 15.7 | 150 | 8–9 of 10 |
+| 4 | off | 2177 | 13.5 | 174 | 10 of 10 |
+
+Parking lowered throughput in every round (by 18% under full contention) and improved p99 by 13–20%.
+Under fair-share scheduling a parked worker's CPU time goes to the competing processes, not to the other workers.
+So parking is opt-in (`park_on_steal=True`) for tail-latency-sensitive services; the default keeps every worker serving.
+Logs: [hog-10.log](macos-preliminary/hog-10.log), [hog-4.log](macos-preliminary/hog-4.log).
 
 Raw logs and JSON: [macos-preliminary/](macos-preliminary/) (`cooldown-attempt.log` shows the machine failing to
 return to its cold calibration within 10 minutes of rest).

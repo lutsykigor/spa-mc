@@ -26,7 +26,8 @@
 | `spa_mc.worker` | each subinterpreter | the per-core asyncio loop: fd handoff (or `SO_REUSEPORT` listener), concurrency limit and FIFO wait queue, handler tasks, lag watchdog, telemetry publishing |
 | `spa_mc.limiter` | anywhere | `VegasLimiter`, a pure (clock-free) adaptive concurrency limit |
 | `spa_mc.telemetry` | both | the shared per-worker record, CRC-checked against torn reads |
-| `spa_mc.topology` | worker | CPU discovery (SMT siblings collapsed on Linux) and per-thread pinning (Linux `sched_setaffinity`, Windows `SetThreadAffinityMask`) |
+| `spa_mc.topology` | both | CPU budget (affinity, SMT siblings collapsed on Linux, cgroup v1/v2 CPU limit) and per-thread pinning (Linux `sched_setaffinity`, Windows `SetThreadAffinityMask`) |
+| `spa_mc.autoscale` | main interpreter | pure decision logic: which workers take traffic, when to start more |
 
 ## Decisions
 
@@ -78,12 +79,28 @@ through on Apple silicon. Each record is written with one copy and read with one
 0 torn reads in about 25 million under a parallel writer, against 1–2% for plain multi-field reads
 ([probe](../bench/probes/torn_reads.py)). The values steer routing only; nothing correctness-critical depends on them.
 
+**The worker count follows the CPU budget.** With `workers='auto'` the engine starts one worker per CPU in the budget:
+the CPUs the process may run on (affinity), one per physical core, cut to the cgroup CPU limit (`cpu.max` on v2,
+CFS quota on v1, the tightest along the cgroup path). Python's `os.cpu_count()` and `os.process_cpu_count()` ignore
+that limit, so a `--cpus=2` container on a 10-core host otherwise looks like 10 CPUs. The telemetry slab is sized for
+every CPU the machine has, so the engine can grow. Every `adapt_interval` the main interpreter re-reads the budget:
+workers beyond it are parked (the router stops sending them work; they stay alive and idle), parked workers come back
+when it has room again, and new workers are started, and pinned to a free CPU, when it grows past the current count.
+
+**Steal parking is measured and opt-in.** Each worker accumulates *steal*: off-CPU time per watchdog tick beyond 2 ms
+of timer slack (idle wake-ups run up to ~1 ms late on Linux and macOS, which first read as a false 18% steal).
+With `park_on_steal=True`, a worker whose steal ratio stays above 0.3 for two intervals is parked, one per interval,
+never the last one; it returns after three intervals below 0.1. Off by default because, under fair-share scheduling,
+it lowered throughput: −18% with a busy-loop process per CPU, −2% with four, for a 13–20% better p99.
+
 ## Robustness rules learned from testing
 
 - **The acceptor must never die.** Per-connection errors are logged and the loop continues;
   a dead acceptor leaves every new client stuck in the kernel accept queue (this happened once under load).
 - **Telemetry reads on the routing path never raise.** `try_read` gives up after a small retry budget and the router
   skips that worker; a worker descheduled halfway through writing its record must not stall routing for everyone.
+- **Measure the measurement.** The first steal estimate read 18% on idle workers; only probing idle, busy and contended
+  workers side by side ([probe](../bench/probes/steal_signal.py)) showed the timer-slack bias.
 - **Weak memory ordering is real.** Fence-free schemes that pass on x86 and Linux can still tear on Apple silicon;
   only a self-validating record (checksum) held up.
 

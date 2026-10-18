@@ -1,0 +1,19 @@
+[13:03:34] calibration baseline 100000.0 ms; 2 scenarios x 3 rounds
+  spa-mc: 8 of 10 workers active at the end
+[13:03:45] round 1 hog:spa-mc(auto)-parking         2082 req/s  p50 18.83 ms  p99 138.96 ms  p99.9 183.47 ms  shed 0  err 0  (cpu x0.00)
+  spa-mc: 10 of 10 workers active at the end
+[13:04:05] round 1 hog:spa-mc(auto)-no-parking      2177 req/s  p50 13.52 ms  p99 173.76 ms  p99.9 322.86 ms  shed 0  err 0  (cpu x0.00)
+  spa-mc: 9 of 10 workers active at the end
+[13:04:26] round 2 hog:spa-mc(auto)-parking         2141 req/s  p50 15.7 ms  p99 150.33 ms  p99.9 196.36 ms  shed 0  err 0  (cpu x0.00)
+  spa-mc: 10 of 10 workers active at the end
+[13:04:47] round 2 hog:spa-mc(auto)-no-parking      2168 req/s  p50 13.89 ms  p99 161.15 ms  p99.9 229.47 ms  shed 0  err 0  (cpu x0.00)
+  spa-mc: 9 of 10 workers active at the end
+[13:05:08] round 3 hog:spa-mc(auto)-parking         2201 req/s  p50 16.9 ms  p99 135.44 ms  p99.9 192.69 ms  shed 0  err 0  (cpu x0.00)
+  spa-mc: 10 of 10 workers active at the end
+[13:05:29] round 3 hog:spa-mc(auto)-no-parking      2262 req/s  p50 16.93 ms  p99 140.34 ms  p99.9 158.87 ms  shed 0  err 0  (cpu x0.00)
+[13:05:39] wrote results/macos-preliminary/hog-4.json
+
+| scenario | req/s | p50 ms | p99 ms | p99.9 ms | shed | errors | cpu factor |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| hog:spa-mc(auto)-parking | 2141 | 15.7 | 150.33 | 196.36 | 0 | 0 | 0.001 |
+| hog:spa-mc(auto)-no-parking | 2177 | 13.52 | 173.76 | 322.86 | 0 | 0 | 0.0 |

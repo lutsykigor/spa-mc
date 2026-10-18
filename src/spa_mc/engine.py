@@ -14,6 +14,7 @@ from concurrent import interpreters
 from typing import Literal
 
 from spa_mc import telemetry, topology
+from spa_mc.autoscale import Autoscaler, WorkerSample
 from spa_mc.limiter import LimiterConfig
 from spa_mc.telemetry import WorkerState, WorkerStats
 from spa_mc.worker import STOP, shed
@@ -43,6 +44,7 @@ class RouterStats:
     dispatched: list[int]
     shed: int
     paused_ms: float
+    active: list[bool]
 
 
 class Engine:
@@ -50,7 +52,7 @@ class Engine:
         self,
         handler: str,
         *,
-        workers: int | None = None,
+        workers: int | Literal['auto'] = 'auto',
         pin: bool = True,
         routing: Routing = 'least_loaded',
         limiter: LimiterConfig | None = LimiterConfig(),
@@ -64,14 +66,28 @@ class Engine:
         stall_threshold: float = 0.02,
         startup_timeout: float = 10.0,
         shutdown_grace: float = 5.0,
+        adapt_interval: float = 1.0,
+        park_on_steal: bool = False,
     ) -> None:
         if routing == 'reuseport' and not hasattr(socket, 'SO_REUSEPORT'):
             raise ValueError('reuseport routing needs SO_REUSEPORT')
         if overload not in ('queue', 'shed'):
             raise ValueError(f"overload must be 'queue' or 'shed', not {overload!r}")
-        cpus = topology.physical_cpus()
-        self.workers = workers or len(cpus)
-        self.cores = [cpus[i % len(cpus)] if pin else -1 for i in range(self.workers)]
+        self.auto = workers == 'auto'
+        if self.auto:
+            budget = topology.cpu_budget()
+            self.capacity = max(len(topology.available_cpus()), len(budget))
+            self._initial_cores = budget if pin else [-1] * len(budget)
+        elif isinstance(workers, int) and workers > 0:
+            cpus = topology.physical_cpus()
+            self.capacity = workers
+            self._initial_cores = [cpus[i % len(cpus)] if pin else -1 for i in range(workers)]
+        else:
+            raise ValueError(f"workers must be a positive int or 'auto', not {workers!r}")
+        self.pin = pin
+        self.workers = 0
+        self.cores: list[int] = []
+        self.adapt_interval = adapt_interval
         self.routing = routing
         self.overload = overload
         self.worker_queue = worker_queue if overload == 'queue' else 0
@@ -96,13 +112,17 @@ class Engine:
             'port': None,
             'backlog': 1024,
         }
-        self.slab = telemetry.allocate(self.workers)
+        self.slab = telemetry.allocate(self.capacity)
         self._interps: list[interpreters.Interpreter] = []
         self._threads: list[threading.Thread] = []
         self._inboxes: list[interpreters.Queue] = []
         self._doorbells: list[socket.socket] = []
         self._failures: dict[int, BaseException] = {}
-        self._dispatched = [0] * self.workers
+        self._dispatched: list[int] = []
+        self._active: list[bool] = []
+        self._autoscaler = Autoscaler(park_on_steal=park_on_steal)
+        self._steal_seen: dict[int, tuple[float, float]] = {}
+        self._adapter: asyncio.Task | None = None
         self._router_shed = 0
         self._paused = 0.0
         self._next = 0
@@ -124,9 +144,15 @@ class Engine:
         if self.routing == 'reuseport' and self._base_config['port'] is None:
             raise RuntimeError('reuseport workers bind their own listeners: call serve_tcp() instead of start()')
         self._started = True
-        for worker_id in range(self.workers):
-            self._spawn(worker_id)
-        await self._wait_ready()
+        for core in self._initial_cores:
+            self._spawn(core)
+        failure = await self._wait_ready(range(self.workers))
+        if failure:
+            await self.stop()
+            raise WorkerStartError(failure)
+        # With reuseport the kernel picks the worker, so there is nothing to park; the count stays as started.
+        if self.auto and self.routing != 'reuseport':
+            self._adapter = asyncio.get_running_loop().create_task(self._adapt_loop())
 
     async def serve_tcp(self, host: str = '127.0.0.1', port: int = 0, backlog: int = 1024) -> tuple[str, int]:
         if self.routing == 'reuseport':
@@ -168,9 +194,18 @@ class Engine:
         return [telemetry.read(self.slab, worker_id) for worker_id in range(self.workers)]
 
     def router_stats(self) -> RouterStats:
-        return RouterStats(dispatched=list(self._dispatched), shed=self._router_shed, paused_ms=self._paused * 1000)
+        return RouterStats(
+            dispatched=list(self._dispatched),
+            shed=self._router_shed,
+            paused_ms=self._paused * 1000,
+            active=list(self._active),
+        )
 
     async def stop(self) -> None:
+        if self._adapter:
+            self._adapter.cancel()
+            await asyncio.gather(self._adapter, return_exceptions=True)
+            self._adapter = None
         if self._acceptor:
             self._acceptor.cancel()
             await asyncio.gather(self._acceptor, return_exceptions=True)
@@ -192,11 +227,12 @@ class Engine:
         self._inboxes.clear()
         self._doorbells.clear()
 
-    def _spawn(self, worker_id: int) -> None:
+    def _spawn(self, core: int) -> int:
+        worker_id = self.workers
         inbox = interpreters.create_queue(maxsize=INBOX_CAPACITY)
         doorbell, worker_end = socket.socketpair()
         doorbell.setblocking(False)
-        config = dict(self._base_config, worker_id=worker_id, core=self.cores[worker_id])
+        config = dict(self._base_config, worker_id=worker_id, core=core)
         interp = interpreters.create()
         interp.prepare_main(
             _spa_mc_path=tuple(sys.path),
@@ -210,7 +246,12 @@ class Engine:
         self._threads.append(thread)
         self._inboxes.append(inbox)
         self._doorbells.append(doorbell)
+        self.cores.append(core)
+        self._dispatched.append(0)
+        self._active.append(True)
+        self.workers += 1
         thread.start()
+        return worker_id
 
     def _ring(self, worker_id: int) -> None:
         try:
@@ -225,20 +266,57 @@ class Engine:
         except interpreters.ExecutionFailed as exc:
             self._failures[worker_id] = exc
 
-    async def _wait_ready(self) -> None:
+    async def _wait_ready(self, worker_ids: range | list[int]) -> str | None:
+        """None once every given worker is READY; otherwise a description of why not."""
         deadline = time.monotonic() + self.startup_timeout
         while True:
-            states = [stats.state for stats in self.stats()]
-            if self._failures or WorkerState.FAILED in states:
-                await asyncio.to_thread(lambda: [t.join(1.0) for t in self._threads])
-                await self.stop()
-                raise WorkerStartError(_describe_failures(self._failures))
+            states = [telemetry.read(self.slab, worker_id).state for worker_id in worker_ids]
+            failed = {w: exc for w, exc in self._failures.items() if w in worker_ids}
+            if failed or WorkerState.FAILED in states:
+                threads = [self._threads[w] for w in worker_ids]
+                await asyncio.to_thread(lambda: [t.join(1.0) for t in threads])
+                return _describe_failures({w: exc for w, exc in self._failures.items() if w in worker_ids})
             if all(state is WorkerState.READY for state in states):
-                return
+                return None
             if time.monotonic() > deadline:
-                await self.stop()
-                raise WorkerStartError(f'workers not ready after {self.startup_timeout}s: {states}')
+                return f'workers not ready after {self.startup_timeout}s: {states}'
             await asyncio.sleep(0.005)
+
+    async def _adapt_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self.adapt_interval)
+            try:
+                await self._adapt()
+            except Exception:
+                # Adaptation is an optimisation; a failed round must not take the engine down.
+                traceback.print_exc(file=sys.stderr)
+
+    async def _adapt(self) -> None:
+        now = time.monotonic()
+        samples = []
+        for worker_id in range(self.workers):
+            stats = telemetry.try_read(self.slab, worker_id)
+            if stats is None or stats.state is not WorkerState.READY:
+                continue
+            seen_steal, seen_at = self._steal_seen.get(worker_id, (stats.steal_s, now))
+            self._steal_seen[worker_id] = (stats.steal_s, now)
+            ratio = (stats.steal_s - seen_steal) / (now - seen_at) if now > seen_at else 0.0
+            samples.append(WorkerSample(worker_id, self._active[worker_id], ratio))
+        budget = topology.cpu_budget()
+        decision = self._autoscaler.decide(samples, len(budget))
+        for worker_id in decision.park:
+            self._active[worker_id] = False
+        for worker_id in decision.unpark:
+            self._active[worker_id] = True
+        for _ in range(min(decision.spawn, self.capacity - self.workers)):
+            free = [cpu for cpu in budget if cpu not in self.cores]
+            if self.pin and not free:
+                break
+            worker_id = self._spawn(free[0] if self.pin else -1)
+            failure = await self._wait_ready([worker_id])
+            if failure:
+                self._active[worker_id] = False
+                print(f'spa-mc: could not add a worker: {failure}', file=sys.stderr)
 
     async def _accept_loop(self, listener: socket.socket) -> None:
         loop = asyncio.get_running_loop()
@@ -283,6 +361,8 @@ class Engine:
     def _pick_round_robin(self, ignore_capacity: bool, peek: bool) -> int | None:
         for offset in range(self.workers):
             worker_id = (self._next + offset) % self.workers
+            if not self._active[worker_id]:
+                continue
             stats = telemetry.try_read(self.slab, worker_id)
             if stats is None or stats.state is not WorkerState.READY:
                 continue
@@ -300,6 +380,8 @@ class Engine:
         threshold_ms = self.stall_threshold * 1000.0
         for offset in range(self.workers):
             worker_id = (self._next + offset) % self.workers
+            if not self._active[worker_id]:
+                continue
             stats = telemetry.try_read(self.slab, worker_id)
             if stats is None or stats.state is not WorkerState.READY:
                 continue

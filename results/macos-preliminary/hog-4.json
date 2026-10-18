@@ -1,0 +1,124 @@
+{
+  "machine": {
+    "platform": "macOS-26.7.1-arm64-arm-64bit-Mach-O",
+    "python": "3.14.8",
+    "cpus": 10,
+    "machdep.cpu.brand_string": "Apple M5",
+    "hw.perflevel0.physicalcpu": "4",
+    "hw.perflevel1.physicalcpu": "6"
+  },
+  "settings": {
+    "suite": "hog",
+    "workers": 4,
+    "rounds": 3,
+    "duration": 8.0,
+    "work": 50000,
+    "clients": 2,
+    "concurrency": 32,
+    "cooldown": 10.0,
+    "throttle_tolerance": 0.1,
+    "baseline_ms": 100000.0,
+    "hogs": 4,
+    "only": null,
+    "python_ft": null
+  },
+  "calibration_baseline_ms": 100000.0,
+  "scenarios": {
+    "hog:spa-mc(auto)-parking": {
+      "median": {
+        "ok": 17127,
+        "shed": 0,
+        "errors": 0,
+        "rps": 2140.9,
+        "p50_ms": 15.7,
+        "p99_ms": 150.33,
+        "p999_ms": 196.36,
+        "max_ms": 257.29,
+        "calibration_factor": 0.001
+      },
+      "runs": [
+        {
+          "ok": 16656,
+          "shed": 0,
+          "errors": 0,
+          "rps": 2082.0,
+          "p50_ms": 18.83,
+          "p99_ms": 138.96,
+          "p999_ms": 183.47,
+          "max_ms": 200.33,
+          "calibration_factor": 0.0
+        },
+        {
+          "ok": 17127,
+          "shed": 0,
+          "errors": 0,
+          "rps": 2140.9,
+          "p50_ms": 15.7,
+          "p99_ms": 150.33,
+          "p999_ms": 196.36,
+          "max_ms": 257.29,
+          "calibration_factor": 0.001
+        },
+        {
+          "ok": 17605,
+          "shed": 0,
+          "errors": 0,
+          "rps": 2200.6,
+          "p50_ms": 16.9,
+          "p99_ms": 135.44,
+          "p999_ms": 192.69,
+          "max_ms": 202.1,
+          "calibration_factor": 0.0
+        }
+      ]
+    },
+    "hog:spa-mc(auto)-no-parking": {
+      "median": {
+        "ok": 17419,
+        "shed": 0,
+        "errors": 0,
+        "rps": 2177.4,
+        "p50_ms": 13.52,
+        "p99_ms": 173.76,
+        "p999_ms": 322.86,
+        "max_ms": 439.74,
+        "calibration_factor": 0.0
+      },
+      "runs": [
+        {
+          "ok": 17419,
+          "shed": 0,
+          "errors": 0,
+          "rps": 2177.4,
+          "p50_ms": 13.52,
+          "p99_ms": 173.76,
+          "p999_ms": 322.86,
+          "max_ms": 439.74,
+          "calibration_factor": 0.0
+        },
+        {
+          "ok": 17346,
+          "shed": 0,
+          "errors": 0,
+          "rps": 2168.2,
+          "p50_ms": 13.89,
+          "p99_ms": 161.15,
+          "p999_ms": 229.47,
+          "max_ms": 267.0,
+          "calibration_factor": 0.0
+        },
+        {
+          "ok": 18094,
+          "shed": 0,
+          "errors": 0,
+          "rps": 2261.8,
+          "p50_ms": 16.93,
+          "p99_ms": 140.34,
+          "p999_ms": 158.87,
+          "max_ms": 171.24,
+          "calibration_factor": 0.0
+        }
+      ]
+    }
+  }
+}
