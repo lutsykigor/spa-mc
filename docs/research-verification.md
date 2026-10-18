@@ -6,7 +6,7 @@ Before building on it, each load-bearing claim was checked against a real interp
 This page records what held, what did not, and what spa-mc does differently as a result.
 
 Environment: Apple M5 (4 performance + 6 efficiency cores, 128-byte cache lines), macOS,
-CPython 3.12.15 and 3.14.8; Linux checks ran in a `python:3.14-slim` container (arm64, 10 vCPUs).
+Python 3.12.15 and 3.14.8; Linux checks ran in a `python:3.14-slim` container (arm64, 10 vCPUs).
 Probe scripts are reproduced in [`bench/probes/`](../bench/probes/).
 
 ## Verdicts
@@ -39,7 +39,7 @@ Probe scripts are reproduced in [`bench/probes/`](../bench/probes/).
 
 Multi-core Python in one process is not new in 3.14, and spa-mc is not the only route to it:
 
-- **Free-threaded CPython** (PEP 703, officially supported since 3.14 via PEP 779) runs ordinary threads in parallel
+- **Free-threaded Python** (PEP 703, officially supported since 3.14 via PEP 779) runs ordinary threads in parallel
   with shared objects and no per-interpreter isolation. The benchmarks include it as a baseline.
 - **`concurrent.futures.InterpreterPoolExecutor`** (3.14) already gives a pool of subinterpreters for CPU work.
 - **Pre-fork worker processes** (gunicorn-style) remain a strong, simple baseline, and are in the benchmarks too.

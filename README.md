@@ -4,7 +4,9 @@
 plus per-core adaptive concurrency control and load-aware connection routing. Every request is served; none is
 rejected unless you ask for that.**
 
-> Status: **proof of concept.** CPython **3.14+** only. 65 tests, passing on Linux and macOS; Windows runs in CI.
+> Status: **proof of concept.** Python **3.14+** only. 65 tests, passing on Linux and macOS; Windows runs in CI.
+> Requires the standard Python (CPython). Alternative implementations such as PyPy and GraalPy don't have
+> per-interpreter GILs, so spa-mc can't run on them.
 > Benchmark numbers so far come from a throttling laptop and are preliminary; see [results](results/README.md).
 
 ```python
@@ -102,13 +104,13 @@ agree on the following:
 
 With a simulated noisy neighbour (worker 0 loses its core 60 ms out of every 250 ms), spa-mc's load-aware routing plus limit
 cut p99 by **40–53%** against blind round-robin at equal throughput.
-Free-threaded CPython is the honest yardstick here: on this workload spa-mc does not beat it.
+Free-threaded Python is the honest yardstick here: on this workload spa-mc does not beat it.
 These runs predate queue-by-default; they shed no requests except 1–73 in the round-robin noisy scenario.
 Re-measurement on an actively cooled machine is pending.
 
 ## Where this sits
 
-Multi-core Python in one process does not start here. **Free-threaded CPython** (PEP 703, supported since 3.14) runs
+Multi-core Python in one process does not start here. **Free-threaded Python** (PEP 703, supported since 3.14) runs
 ordinary threads in parallel with shared objects, and `InterpreterPoolExecutor` (3.14) already pools subinterpreters.
 spa-mc is a composition: long-lived per-core asyncio loops, per-core concurrency control and load-aware routing,
 packaged and tested. It suits I/O servers with CPU-heavy handlers that want isolation between cores without separate
@@ -125,7 +127,7 @@ Full table with evidence: [docs/research-verification.md](docs/research-verifica
 
 ## Limitations
 
-- CPython 3.14+. Pinning on Linux and Windows (first 64 CPUs); macOS has no thread-affinity API, so workers run unpinned there.
+- Python 3.14+ (the standard CPython). Pinning on Linux and Windows (first 64 CPUs); macOS has no thread-affinity API, so workers run unpinned there.
 - The acceptor is one asyncio loop on the main interpreter; it caps the *connection rate*. Use `reuseport` on Linux to remove it.
 - The limit counts connections; keep-alive protocols should limit per request via `spa_mc.current().limiter`.
 - Requests already on a worker when it stalls still wait out the stall; routing and the limit protect new work.

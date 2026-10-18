@@ -1,4 +1,4 @@
-"""spa-mc - Single Process Adaptive Multi-Core asyncio engine (CPython 3.14+)."""
+"""spa-mc - Single Process Adaptive Multi-Core asyncio engine (Python 3.14+)."""
 
 from spa_mc import topology
 from spa_mc.engine import Engine, RouterStats, WorkerStartError
