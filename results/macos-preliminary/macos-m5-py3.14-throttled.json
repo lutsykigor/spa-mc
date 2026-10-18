@@ -1,0 +1,363 @@
+{
+  "machine": {
+    "platform": "macOS-26.7.1-arm64-arm-64bit-Mach-O",
+    "python": "3.14.8",
+    "cpus": 10,
+    "machdep.cpu.brand_string": "Apple M5",
+    "hw.perflevel0.physicalcpu": "4",
+    "hw.perflevel1.physicalcpu": "6"
+  },
+  "settings": {
+    "suite": "all",
+    "workers": 4,
+    "rounds": 3,
+    "duration": 8.0,
+    "work": 50000,
+    "clients": 2,
+    "concurrency": 32,
+    "cooldown": 15.0,
+    "throttle_tolerance": 0.1,
+    "baseline_ms": 95.5,
+    "only": null,
+    "python_ft": "python3.14t (uv-managed, free-threaded build)"
+  },
+  "calibration_baseline_ms": 95.5,
+  "scenarios": {
+    "asyncio-single-loop": {
+      "median": {
+        "ok": 5199,
+        "shed": 0,
+        "errors": 0,
+        "rps": 649.9,
+        "p50_ms": 99.92,
+        "p99_ms": 123.14,
+        "p999_ms": 171.35,
+        "max_ms": 190.73,
+        "calibration_factor": 0.868
+      },
+      "runs": [
+        {
+          "ok": 5628,
+          "shed": 0,
+          "errors": 0,
+          "rps": 703.5,
+          "p50_ms": 92.27,
+          "p99_ms": 130.21,
+          "p999_ms": 151.11,
+          "max_ms": 151.19,
+          "calibration_factor": 0.899
+        },
+        {
+          "ok": 5199,
+          "shed": 0,
+          "errors": 0,
+          "rps": 649.9,
+          "p50_ms": 99.92,
+          "p99_ms": 123.14,
+          "p999_ms": 171.35,
+          "max_ms": 190.73,
+          "calibration_factor": 0.868
+        },
+        {
+          "ok": 4974,
+          "shed": 0,
+          "errors": 0,
+          "rps": 621.8,
+          "p50_ms": 103.75,
+          "p99_ms": 151.79,
+          "p999_ms": 177.54,
+          "max_ms": 177.67,
+          "calibration_factor": 0.852
+        }
+      ]
+    },
+    "asyncio+threads(4)-gil": {
+      "median": {
+        "ok": 4992,
+        "shed": 0,
+        "errors": 0,
+        "rps": 624.0,
+        "p50_ms": 103.3,
+        "p99_ms": 147.22,
+        "p999_ms": 175.13,
+        "max_ms": 175.76,
+        "calibration_factor": 0.863
+      },
+      "runs": [
+        {
+          "ok": 5300,
+          "shed": 0,
+          "errors": 0,
+          "rps": 662.5,
+          "p50_ms": 95.44,
+          "p99_ms": 138.86,
+          "p999_ms": 158.72,
+          "max_ms": 159.6,
+          "calibration_factor": 0.756
+        },
+        {
+          "ok": 4992,
+          "shed": 0,
+          "errors": 0,
+          "rps": 624.0,
+          "p50_ms": 103.3,
+          "p99_ms": 147.22,
+          "p999_ms": 175.13,
+          "max_ms": 175.76,
+          "calibration_factor": 0.863
+        },
+        {
+          "ok": 4956,
+          "shed": 0,
+          "errors": 0,
+          "rps": 619.5,
+          "p50_ms": 104.66,
+          "p99_ms": 150.86,
+          "p999_ms": 169.16,
+          "max_ms": 176.13,
+          "calibration_factor": 0.972
+        }
+      ]
+    },
+    "prefork-processes(4)": {
+      "median": {
+        "ok": 11555,
+        "shed": 0,
+        "errors": 0,
+        "rps": 1444.4,
+        "p50_ms": 41.12,
+        "p99_ms": 98.9,
+        "p999_ms": 137.92,
+        "max_ms": 140.76,
+        "calibration_factor": 0.867
+      },
+      "runs": [
+        {
+          "ok": 11878,
+          "shed": 0,
+          "errors": 0,
+          "rps": 1484.8,
+          "p50_ms": 38.38,
+          "p99_ms": 112.6,
+          "p999_ms": 119.29,
+          "max_ms": 119.56,
+          "calibration_factor": 0.743
+        },
+        {
+          "ok": 11555,
+          "shed": 0,
+          "errors": 0,
+          "rps": 1444.4,
+          "p50_ms": 41.12,
+          "p99_ms": 98.9,
+          "p999_ms": 137.92,
+          "max_ms": 140.76,
+          "calibration_factor": 0.867
+        },
+        {
+          "ok": 11096,
+          "shed": 0,
+          "errors": 0,
+          "rps": 1387.0,
+          "p50_ms": 42.17,
+          "p99_ms": 105.23,
+          "p999_ms": 112.46,
+          "max_ms": 114.05,
+          "calibration_factor": 0.852
+        }
+      ]
+    },
+    "spa-mc(4)": {
+      "median": {
+        "ok": 11677,
+        "shed": 0,
+        "errors": 0,
+        "rps": 1459.6,
+        "p50_ms": 43.36,
+        "p99_ms": 71.2,
+        "p999_ms": 82.25,
+        "max_ms": 86.67,
+        "calibration_factor": 0.839
+      },
+      "runs": [
+        {
+          "ok": 11989,
+          "shed": 0,
+          "errors": 0,
+          "rps": 1498.6,
+          "p50_ms": 41.86,
+          "p99_ms": 71.61,
+          "p999_ms": 89.05,
+          "max_ms": 97.17,
+          "calibration_factor": 0.806
+        },
+        {
+          "ok": 11677,
+          "shed": 0,
+          "errors": 0,
+          "rps": 1459.6,
+          "p50_ms": 43.36,
+          "p99_ms": 71.2,
+          "p999_ms": 82.25,
+          "max_ms": 86.67,
+          "calibration_factor": 0.839
+        },
+        {
+          "ok": 11105,
+          "shed": 0,
+          "errors": 0,
+          "rps": 1388.1,
+          "p50_ms": 45.53,
+          "p99_ms": 75.84,
+          "p999_ms": 86.34,
+          "max_ms": 91.09,
+          "calibration_factor": 0.882
+        }
+      ]
+    },
+    "asyncio+threads(4)-free-threaded": {
+      "median": {
+        "ok": 10646,
+        "shed": 0,
+        "errors": 0,
+        "rps": 1330.8,
+        "p50_ms": 48.35,
+        "p99_ms": 66.75,
+        "p999_ms": 97.81,
+        "max_ms": 106.66,
+        "calibration_factor": 1.065
+      },
+      "runs": [
+        {
+          "ok": 11019,
+          "shed": 0,
+          "errors": 0,
+          "rps": 1377.4,
+          "p50_ms": 46.5,
+          "p99_ms": 68.5,
+          "p999_ms": 85.45,
+          "max_ms": 136.91,
+          "calibration_factor": 0.889
+        },
+        {
+          "ok": 10646,
+          "shed": 0,
+          "errors": 0,
+          "rps": 1330.8,
+          "p50_ms": 48.35,
+          "p99_ms": 66.75,
+          "p999_ms": 97.81,
+          "max_ms": 106.66,
+          "calibration_factor": 1.065
+        },
+        {
+          "ok": 10405,
+          "shed": 0,
+          "errors": 0,
+          "rps": 1300.6,
+          "p50_ms": 49.51,
+          "p99_ms": 69.74,
+          "p999_ms": 116.9,
+          "max_ms": 203.35,
+          "calibration_factor": 0.829
+        }
+      ]
+    },
+    "noisy:spa-mc(4)-roundrobin-novalve": {
+      "median": {
+        "ok": 10181,
+        "shed": 7,
+        "errors": 0,
+        "rps": 1272.6,
+        "p50_ms": 22.99,
+        "p99_ms": 207.1,
+        "p999_ms": 225.0,
+        "max_ms": 233.45,
+        "calibration_factor": 0.842
+      },
+      "runs": [
+        {
+          "ok": 10914,
+          "shed": 9,
+          "errors": 0,
+          "rps": 1364.2,
+          "p50_ms": 22.28,
+          "p99_ms": 190.06,
+          "p999_ms": 213.99,
+          "max_ms": 221.47,
+          "calibration_factor": 0.818
+        },
+        {
+          "ok": 10093,
+          "shed": 1,
+          "errors": 0,
+          "rps": 1261.6,
+          "p50_ms": 23.64,
+          "p99_ms": 204.36,
+          "p999_ms": 233.28,
+          "max_ms": 242.22,
+          "calibration_factor": 0.998
+        },
+        {
+          "ok": 10181,
+          "shed": 7,
+          "errors": 0,
+          "rps": 1272.6,
+          "p50_ms": 22.99,
+          "p99_ms": 207.1,
+          "p999_ms": 225.0,
+          "max_ms": 233.45,
+          "calibration_factor": 0.842
+        }
+      ]
+    },
+    "noisy:spa-mc(4)-leastloaded-valve": {
+      "median": {
+        "ok": 10505,
+        "shed": 0,
+        "errors": 0,
+        "rps": 1313.1,
+        "p50_ms": 49.86,
+        "p99_ms": 97.16,
+        "p999_ms": 114.74,
+        "max_ms": 126.17,
+        "calibration_factor": 0.924
+      },
+      "runs": [
+        {
+          "ok": 11401,
+          "shed": 0,
+          "errors": 0,
+          "rps": 1425.1,
+          "p50_ms": 45.49,
+          "p99_ms": 90.85,
+          "p999_ms": 118.6,
+          "max_ms": 134.34,
+          "calibration_factor": 0.865
+        },
+        {
+          "ok": 10505,
+          "shed": 0,
+          "errors": 0,
+          "rps": 1313.1,
+          "p50_ms": 49.86,
+          "p99_ms": 97.16,
+          "p999_ms": 114.74,
+          "max_ms": 126.17,
+          "calibration_factor": 0.924
+        },
+        {
+          "ok": 10405,
+          "shed": 0,
+          "errors": 0,
+          "rps": 1300.6,
+          "p50_ms": 49.4,
+          "p99_ms": 118.62,
+          "p999_ms": 158.92,
+          "max_ms": 212.49,
+          "calibration_factor": 0.885
+        }
+      ]
+    }
+  }
+}

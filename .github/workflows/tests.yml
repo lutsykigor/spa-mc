@@ -1,0 +1,34 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uvx ruff check src tests bench
+      - run: uvx ruff format --check src tests bench
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install
+        run: uv sync --python 3.14
+      - name: Tests
+        run: uv run pytest -v -m "not timing"
+      - name: Timing test (shared CI runners are noisy, so informational only)
+        continue-on-error: true
+        run: uv run pytest -v -m timing
+      - name: Benchmark harness smoke run (functional check, numbers are not meaningful on CI)
+        run: uv run python bench/run_bench.py --rounds 1 --duration 1 --cooldown 0 --baseline-ms 100000 --out bench-smoke.json

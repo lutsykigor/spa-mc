@@ -1,0 +1,33 @@
+[10:30:51] calibration baseline 88.0 ms; 7 scenarios x 3 rounds
+[10:31:00] round 1 asyncio-single-loop               903 req/s  p50 70.73 ms  p99 112.02 ms  p99.9 119.5 ms  shed 0  err 0  (cpu x0.55)
+[10:31:28] round 1 asyncio+threads(4)-gil            942 req/s  p50 67.33 ms  p99 105.28 ms  p99.9 118.26 ms  shed 0  err 0  (cpu x0.52)
+[10:31:57] round 1 prefork-processes(4)             2066 req/s  p50 28.71 ms  p99 83.79 ms  p99.9 101.99 ms  shed 0  err 0  (cpu x0.57)
+[10:32:25] round 1 spa-mc(4)                         2094 req/s  p50 29.62 ms  p99 57.72 ms  p99.9 68.75 ms  shed 0  err 0  (cpu x0.55)
+[10:32:54] round 1 asyncio+threads(4)-free-threaded     2006 req/s  p50 31.95 ms  p99 49.39 ms  p99.9 64.03 ms  shed 0  err 0  (cpu x0.59)
+[10:33:23] round 1 noisy:spa-mc(4)-roundrobin-novalve     1998 req/s  p50 21.16 ms  p99 135.84 ms  p99.9 161.46 ms  shed 79  err 0  (cpu x0.56)
+[10:33:51] round 1 noisy:spa-mc(4)-leastloaded-valve     2047 req/s  p50 30.93 ms  p99 78.54 ms  p99.9 96.79 ms  shed 0  err 0  (cpu x0.56)
+[10:34:20] round 2 asyncio-single-loop               960 req/s  p50 67.1 ms  p99 99.89 ms  p99.9 115.57 ms  shed 0  err 0  (cpu x0.54)
+[10:34:48] round 2 asyncio+threads(4)-gil            934 req/s  p50 68.67 ms  p99 105.06 ms  p99.9 131.75 ms  shed 0  err 0  (cpu x0.55)
+[10:35:17] round 2 prefork-processes(4)             2095 req/s  p50 29.04 ms  p99 86.27 ms  p99.9 107.04 ms  shed 0  err 0  (cpu x0.55)
+[10:35:45] round 2 spa-mc(4)                         2158 req/s  p50 28.64 ms  p99 57.6 ms  p99.9 68.65 ms  shed 0  err 0  (cpu x0.55)
+[10:36:14] round 2 asyncio+threads(4)-free-threaded     1988 req/s  p50 31.34 ms  p99 63.54 ms  p99.9 104.49 ms  shed 0  err 0  (cpu x0.53)
+[10:36:43] round 2 noisy:spa-mc(4)-roundrobin-novalve     1968 req/s  p50 21.18 ms  p99 136.69 ms  p99.9 169.12 ms  shed 71  err 0  (cpu x0.57)
+[10:37:11] round 2 noisy:spa-mc(4)-leastloaded-valve     2088 req/s  p50 29.72 ms  p99 74.89 ms  p99.9 93.08 ms  shed 0  err 0  (cpu x0.56)
+[10:37:40] round 3 asyncio-single-loop               959 req/s  p50 66.52 ms  p99 87.54 ms  p99.9 127.15 ms  shed 0  err 0  (cpu x0.55)
+[10:38:08] round 3 asyncio+threads(4)-gil            947 req/s  p50 68.17 ms  p99 93.46 ms  p99.9 108.6 ms  shed 0  err 0  (cpu x0.57)
+[10:38:37] round 3 prefork-processes(4)             2093 req/s  p50 27.63 ms  p99 88.74 ms  p99.9 105.93 ms  shed 0  err 0  (cpu x0.56)
+[10:39:05] round 3 spa-mc(4)                         2157 req/s  p50 28.66 ms  p99 58.04 ms  p99.9 83.66 ms  shed 0  err 0  (cpu x0.56)
+[10:39:34] round 3 asyncio+threads(4)-free-threaded     2050 req/s  p50 31.15 ms  p99 46.65 ms  p99.9 54.68 ms  shed 0  err 0  (cpu x0.55)
+[10:40:03] round 3 noisy:spa-mc(4)-roundrobin-novalve     1989 req/s  p50 21.75 ms  p99 133.34 ms  p99.9 155.75 ms  shed 73  err 0  (cpu x0.55)
+[10:40:31] round 3 noisy:spa-mc(4)-leastloaded-valve     2029 req/s  p50 30.83 ms  p99 74.86 ms  p99.9 97.16 ms  shed 0  err 0  (cpu x0.55)
+[10:40:51] wrote results/macos-m5-py3.14-run2.json
+
+| scenario | req/s | p50 ms | p99 ms | p99.9 ms | shed | errors | cpu factor |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| asyncio-single-loop | 959 | 66.52 | 87.54 | 127.15 | 0 | 0 | 0.551 |
+| asyncio+threads(4)-gil | 942 | 67.33 | 105.28 | 118.26 | 0 | 0 | 0.524 |
+| prefork-processes(4) | 2093 | 27.63 | 88.74 | 105.93 | 0 | 0 | 0.565 |
+| spa-mc(4) | 2157 | 28.66 | 58.04 | 83.66 | 0 | 0 | 0.559 |
+| asyncio+threads(4)-free-threaded | 2006 | 31.95 | 49.39 | 64.03 | 0 | 0 | 0.587 |
+| noisy:spa-mc(4)-roundrobin-novalve | 1989 | 21.75 | 133.34 | 155.75 | 73 | 0 | 0.547 |
+| noisy:spa-mc(4)-leastloaded-valve | 2047 | 30.93 | 78.54 | 96.79 | 0 | 0 | 0.558 |

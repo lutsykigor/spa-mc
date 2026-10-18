@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+dist/
+results/raw/
+bench-smoke.json
+.DS_Store
