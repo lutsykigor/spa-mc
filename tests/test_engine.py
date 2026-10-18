@@ -110,8 +110,8 @@ def test_a_worker_frozen_mid_telemetry_write_does_not_stop_the_acceptor():
             stalled = asyncio.create_task(request(address, b'STALL 0.6\n'))
             await asyncio.sleep(0.1)
             frozen = next(s.worker_id for s in engine.stats() if s.received == 1)
-            # Leave the frozen worker's sequence counter odd, as if preempted between its two counter writes.
-            telemetry._SEQ.pack_into(engine.slab, frozen * telemetry.STRIDE, 1)
+            # Corrupt the frozen worker's record, as if it were preempted halfway through copying it.
+            engine.slab[frozen * telemetry.STRIDE + 10] ^= 0xFF
             replies = await asyncio.wait_for(asyncio.gather(*(request(address, b'go\n') for _ in range(10))), 0.4)
             await stalled
             return frozen, [int(reply) for reply, _ in replies]
@@ -150,10 +150,30 @@ def test_a_loop_busy_with_its_own_work_is_not_mistaken_for_a_stall():
     assert stats.limit == 50
 
 
-def test_excess_connections_are_shed_once_the_limit_is_reached():
+FIXED_3 = LimiterConfig(initial_limit=3, min_limit=3, max_limit=3)
+
+
+def test_excess_connections_wait_and_all_complete_without_exceeding_the_limit():
     async def scenario():
-        limiter = LimiterConfig(initial_limit=3, min_limit=3, max_limit=3)
-        async with spa_mc.Engine('apps:slow', workers=1, limiter=limiter, shed_response=b'BUSY\n') as engine:
+        async with spa_mc.Engine('apps:peak_concurrency', workers=1, limiter=FIXED_3) as engine:
+            address = await engine.serve_tcp()
+            started = time.perf_counter()
+            replies = await asyncio.gather(*(request(address, b'x\n') for _ in range(10)))
+            elapsed = time.perf_counter() - started
+            return [reply for reply, _ in replies], elapsed, engine.router_stats(), engine.stats()[0]
+
+    replies, elapsed, router, stats = asyncio.run(scenario())
+    assert all(reply.strip().isdigit() for reply in replies)
+    assert max(int(reply) for reply in replies) == 3
+    assert elapsed >= 0.75
+    assert router.shed == stats.shed == 0
+    assert stats.completed == 10 and stats.queued == 0
+
+
+def test_shed_mode_rejects_the_excess_with_the_shed_response():
+    async def scenario():
+        engine = spa_mc.Engine('apps:slow', workers=1, limiter=FIXED_3, overload='shed', shed_response=b'BUSY\n')
+        async with engine:
             address = await engine.serve_tcp()
             replies = await asyncio.gather(*(request(address, b'x\n') for _ in range(10)))
             return [reply for reply, _ in replies], engine.router_stats(), engine.stats()[0]
@@ -162,6 +182,59 @@ def test_excess_connections_are_shed_once_the_limit_is_reached():
     assert replies.count(b'done\n') == 3
     assert replies.count(b'BUSY\n') == 7
     assert router.shed + stats.shed == 7
+
+
+def test_max_queue_wait_sheds_only_connections_that_waited_too_long():
+    async def scenario():
+        limiter = LimiterConfig(initial_limit=1, min_limit=1, max_limit=1)
+        engine = spa_mc.Engine('apps:slow', workers=1, limiter=limiter, max_queue_wait=0.1, shed_response=b'BUSY\n')
+        async with engine:
+            address = await engine.serve_tcp()
+            first = asyncio.create_task(request(address, b'x\n'))
+            await asyncio.sleep(0.05)
+            late = await asyncio.gather(*(request(address, b'x\n') for _ in range(2)))
+            return await first, late, engine.stats()[0]
+
+    (first, _), late, stats = asyncio.run(scenario())
+    assert first == b'done\n'
+    assert [reply for reply, _ in late] == [b'BUSY\n', b'BUSY\n']
+    assert all(0.09 <= latency < 0.19 for _, latency in late)
+    assert stats.shed == 2
+
+
+def test_router_pauses_accepting_when_every_worker_is_full():
+    async def scenario():
+        engine = spa_mc.Engine('apps:peak_concurrency', workers=1, limiter=FIXED_3, worker_queue=1)
+        async with engine:
+            address = await engine.serve_tcp()
+            replies = await asyncio.gather(*(request(address, b'x\n') for _ in range(9)))
+            return [reply for reply, _ in replies], engine.router_stats(), engine.stats()[0]
+
+    replies, router, stats = asyncio.run(scenario())
+    assert max(int(reply) for reply in replies) == 3
+    assert router.paused_ms > 0
+    assert router.shed == stats.shed == 0
+    assert stats.completed == 9
+
+
+def test_stop_finishes_connections_that_are_still_queued():
+    async def scenario():
+        limiter = LimiterConfig(initial_limit=1, min_limit=1, max_limit=1)
+        engine = spa_mc.Engine('apps:slow', workers=1, limiter=limiter)
+        await engine.start()
+        address = await engine.serve_tcp()
+        clients = [asyncio.create_task(request(address, b'x\n')) for _ in range(3)]
+        await asyncio.sleep(0.1)
+        assert engine.stats()[0].queued == 2
+        await engine.stop()
+        return [reply for reply, _ in await asyncio.gather(*clients)]
+
+    assert asyncio.run(scenario()) == [b'done\n'] * 3
+
+
+def test_overload_policy_is_validated():
+    with pytest.raises(ValueError, match='overload'):
+        spa_mc.Engine('apps:echo', overload='drop')
 
 
 def test_request_timeout_counts_as_a_drop():

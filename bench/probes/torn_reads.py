@@ -1,10 +1,14 @@
-"""Shows why the shared telemetry slab needs a seqlock: a parallel reader can see half-written records.
+"""Shows why the shared telemetry slab needs checksummed records.
 
-A subinterpreter (own GIL, so truly parallel) rewrites one record whose fields must all be equal.
-The main interpreter reads it raw (as the source PoC does) and via spa_mc.telemetry.read (seqlock).
+A subinterpreter (own GIL, so truly parallel) keeps rewriting two records whose fields must all be equal:
+slot 0 with a plain multi-field write (as the source PoC does), slot 1 through spa_mc.telemetry (checksummed).
+The main interpreter reads both and counts reads whose fields disagree.
+
+usage: python torn_reads.py [seconds]
 """
 
 import struct
+import sys
 import threading
 from concurrent import interpreters
 
@@ -27,25 +31,26 @@ while time.monotonic() < deadline:
 """
 
 
-def main(duration: float = 2.0) -> None:
+def main(duration: float) -> None:
     slab = telemetry.allocate(2)
     interp = interpreters.create()
     interp.prepare_main(slab=slab, duration=duration)
     thread = threading.Thread(target=interp.exec, args=(WRITER,))
     thread.start()
-    raw_reads = raw_torn = seq_reads = seq_torn = 0
+    raw_reads = raw_torn = checked_reads = checked_torn = 0
     while thread.is_alive():
         values = RAW.unpack_from(slab, 0)
         raw_reads += 1
         raw_torn += len(set(values)) != 1
-        stats = telemetry.read(slab, 1)
-        seq_reads += 1
-        seq_torn += len({stats.received, stats.completed, stats.shed, stats.stalls}) != 1
+        stats = telemetry.try_read(slab, 1)
+        if stats is not None:
+            checked_reads += 1
+            checked_torn += len({stats.received, stats.completed, stats.shed, stats.stalls}) != 1
     thread.join()
     interp.close()
-    print(f'raw pack/unpack : {raw_torn} torn of {raw_reads} reads')
-    print(f'seqlock read    : {seq_torn} torn of {seq_reads} reads')
+    print(f'plain multi-field read : {raw_torn} torn of {raw_reads} reads')
+    print(f'checksummed read       : {checked_torn} torn of {checked_reads} reads')
 
 
 if __name__ == '__main__':
-    main()
+    main(float(sys.argv[1]) if len(sys.argv) > 1 else 2.0)

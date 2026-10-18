@@ -76,3 +76,21 @@ def stall_worker_zero_periodically(ctx: spa_mc.WorkerContext) -> None:
 def fail_on_start(ctx: spa_mc.WorkerContext) -> None:
     if ctx.worker_id == 1:
         raise RuntimeError('worker 1 refuses to start')
+
+
+_active = 0
+_peak = 0
+
+
+async def peak_concurrency(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """Holds each request 0.2 s and replies with the highest number of requests seen running at once."""
+    global _active, _peak
+    await reader.readline()
+    _active += 1
+    _peak = max(_peak, _active)
+    try:
+        await asyncio.sleep(0.2)
+    finally:
+        _active -= 1
+    writer.write(f'{_peak}\n'.encode())
+    await writer.drain()

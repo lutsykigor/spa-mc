@@ -14,6 +14,7 @@ import socket
 import sys
 import time
 import traceback
+from collections import deque
 from collections.abc import Awaitable, Callable
 from concurrent import interpreters
 from dataclasses import dataclass
@@ -26,6 +27,12 @@ STOP = -1
 SHED_LINGER = 1.0
 
 Handler = Callable[[asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]]
+
+
+@dataclass(slots=True, eq=False)
+class _Waiting:
+    sock: socket.socket
+    expiry: asyncio.TimerHandle | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +89,9 @@ class _Worker:
         self.core = -1
         self.limiter = VegasLimiter(LimiterConfig(**config['limiter'])) if config['limiter'] else None
         self.shed_response = config['shed_response'].encode('latin-1')
+        self.overload = config['overload']
+        self.max_queue_wait = config['max_queue_wait']
+        self.waiting: deque[_Waiting] = deque()
         self.received = 0
         self.completed = 0
         self.shed = 0
@@ -111,11 +121,16 @@ class _Worker:
         self.state = WorkerState.STOPPING
         self.publish()
         close_ingress()
-        if self.tasks:
-            _, pending = await asyncio.wait(self.tasks, timeout=self.config['shutdown_grace'])
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+        # Connections already handed to this worker are finished, queued ones included, within the grace period.
+        deadline = self.loop.time() + self.config['shutdown_grace']
+        while (self.tasks or self.waiting) and self.loop.time() < deadline:
+            await asyncio.sleep(0.01)
+        for entry in self.waiting:
+            entry.sock.close()
+        self.waiting.clear()
+        for task in self.tasks:
+            task.cancel()
+        await asyncio.gather(*self.tasks, return_exceptions=True)
         watchdog.cancel()
         await asyncio.gather(watchdog, return_exceptions=True)
         self.state = WorkerState.STOPPED
@@ -126,6 +141,7 @@ class _Worker:
         self.slot.publish(
             state=self.state,
             in_flight=limiter.in_flight if limiter else len(self.tasks),
+            queued=len(self.waiting),
             limit=limiter.effective_limit if limiter else 0,
             core=self.core,
             received=self.received,
@@ -193,15 +209,47 @@ class _Worker:
 
     def _admit(self, sock: socket.socket) -> None:
         self.received += 1
-        if self.state is not WorkerState.READY or (self.limiter and not self.limiter.try_acquire()):
-            self.shed += 1
-            shed(sock, self.shed_response, self.loop)
-            self.publish()
-            return
+        if self._has_capacity() and not self.waiting:
+            self._start(sock)
+        elif self.overload == 'shed':
+            self._shed(sock)
+        else:
+            self._enqueue(sock)
+        self.publish()
+
+    def _has_capacity(self) -> bool:
+        return self.limiter is None or self.limiter.has_capacity
+
+    def _start(self, sock: socket.socket) -> None:
+        if self.limiter:
+            self.limiter.try_acquire()
         task = self.loop.create_task(self._serve(sock))
         self.tasks.add(task)
-        task.add_done_callback(self.tasks.discard)
+        task.add_done_callback(self._on_done)
+
+    def _enqueue(self, sock: socket.socket) -> None:
+        entry = _Waiting(sock)
+        if self.max_queue_wait is not None:
+            entry.expiry = self.loop.call_later(self.max_queue_wait, self._expire, entry)
+        self.waiting.append(entry)
+
+    def _expire(self, entry: _Waiting) -> None:
+        self.waiting.remove(entry)
+        self._shed(entry.sock)
         self.publish()
+
+    def _on_done(self, task: asyncio.Task) -> None:
+        self.tasks.discard(task)
+        while self.waiting and self._has_capacity():
+            entry = self.waiting.popleft()
+            if entry.expiry:
+                entry.expiry.cancel()
+            self._start(entry.sock)
+        self.publish()
+
+    def _shed(self, sock: socket.socket) -> None:
+        self.shed += 1
+        shed(sock, self.shed_response, self.loop)
 
     async def _serve(self, sock: socket.socket) -> None:
         started = self.loop.time()

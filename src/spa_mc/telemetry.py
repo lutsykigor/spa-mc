@@ -1,26 +1,29 @@
 """Per-worker health records in one shared buffer, readable across interpreters.
 
 Each worker owns one `STRIDE`-byte slot and is its only writer. A reader in another
-interpreter runs truly in parallel (separate GIL), so a plain multi-field read can be
-torn; every slot is guarded by a sequence counter (seqlock): the writer makes it odd
-before writing and even after, and the reader retries until it sees the same even value
-on both sides of its copy. The values are advisory routing hints, never used for
-correctness, so a best-effort seqlock without explicit memory fences is acceptable.
+interpreter runs truly in parallel (separate GIL), so a copy can catch a record half
+written. Python cannot issue memory fences, so a sequence counter (seqlock) is not
+enough on weakly ordered CPUs: one was observed to tear on Apple silicon. Instead every
+record carries a CRC32 of its fields, is written with one copy, and is read with one
+copy that is accepted only if the checksum matches.
 """
 
 from __future__ import annotations
 
 import struct
 import time
+import zlib
 from dataclasses import dataclass
 from enum import IntEnum
 
 # 128 bytes covers the cache-line size of both x86-64 (64) and Apple silicon (128).
 STRIDE = 128
 
-_SEQ = struct.Struct('<Q')
-_BODY = struct.Struct('<IIIIQQQQddddd')
-assert _SEQ.size + _BODY.size <= STRIDE
+_CRC = struct.Struct('<I')
+_BODY = struct.Struct('<IIIIIQQQQddddd')
+RECORD = _CRC.size + _BODY.size
+assert RECORD <= STRIDE
+_NEVER_WRITTEN = bytes(RECORD)
 
 
 class WorkerState(IntEnum):
@@ -36,6 +39,7 @@ class WorkerStats:
     worker_id: int
     state: WorkerState
     in_flight: int
+    queued: int
     limit: int
     core: int
     received: int
@@ -51,9 +55,6 @@ class WorkerStats:
     @property
     def heartbeat_age(self) -> float:
         return time.monotonic() - self.heartbeat
-
-
-_MAX_STATE = max(WorkerState)
 
 
 def allocate(workers: int) -> memoryview:
@@ -80,14 +81,12 @@ class SlotWriter:
         rtt_noload: float,
         loop_lag: float,
         max_loop_lag: float,
+        queued: int = 0,
     ) -> None:
-        (seq,) = _SEQ.unpack_from(self._buf, self._offset)
-        _SEQ.pack_into(self._buf, self._offset, seq + 1)
-        _BODY.pack_into(
-            self._buf,
-            self._offset + _SEQ.size,
+        body = _BODY.pack(
             int(state),
             in_flight,
+            queued,
             limit,
             core & 0xFFFFFFFF,
             received,
@@ -100,7 +99,7 @@ class SlotWriter:
             max_loop_lag * 1000.0,
             time.monotonic(),
         )
-        _SEQ.pack_into(self._buf, self._offset, seq + 2)
+        self._buf[self._offset : self._offset + RECORD] = _CRC.pack(zlib.crc32(body)) + body
 
 
 def read(buffer: memoryview, worker_id: int) -> WorkerStats:
@@ -111,26 +110,26 @@ def read(buffer: memoryview, worker_id: int) -> WorkerStats:
 
 
 def try_read(buffer: memoryview, worker_id: int, max_retries: int = 64) -> WorkerStats | None:
-    """None when the writer stays mid-update (e.g. descheduled by the OS) for the whole retry budget."""
+    """None when no intact copy was seen within the retry budget (e.g. a writer frozen mid-copy)."""
     offset = worker_id * STRIDE
     for _ in range(max_retries):
-        (before,) = _SEQ.unpack_from(buffer, offset)
-        if before & 1:
-            continue
-        body = _BODY.unpack_from(buffer, offset + _SEQ.size)
-        (after,) = _SEQ.unpack_from(buffer, offset)
-        # The state check also rejects a torn body that slipped past the counter on weakly ordered CPUs.
-        if before == after and body[0] <= _MAX_STATE:
-            return _to_stats(worker_id, body)
+        record = bytes(buffer[offset : offset + RECORD])
+        if record == _NEVER_WRITTEN:
+            return _to_stats(worker_id, _BODY.unpack(record[_CRC.size :]))
+        (crc,) = _CRC.unpack_from(record)
+        body = record[_CRC.size :]
+        if zlib.crc32(body) == crc:
+            return _to_stats(worker_id, _BODY.unpack(body))
     return None
 
 
 def _to_stats(worker_id: int, body: tuple) -> WorkerStats:
-    state, in_flight, limit, core, received, completed, shed, stalls, rtt, noload, lag, max_lag, beat = body
+    state, in_flight, queued, limit, core, received, completed, shed, stalls, rtt, noload, lag, max_lag, beat = body
     return WorkerStats(
         worker_id=worker_id,
         state=WorkerState(state),
         in_flight=in_flight,
+        queued=queued,
         limit=limit,
         core=core if core != 0xFFFFFFFF else -1,
         received=received,

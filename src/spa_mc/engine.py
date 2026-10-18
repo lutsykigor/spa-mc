@@ -19,6 +19,7 @@ from spa_mc.telemetry import WorkerState, WorkerStats
 from spa_mc.worker import STOP, shed
 
 Routing = Literal['least_loaded', 'round_robin', 'reuseport']
+Overload = Literal['queue', 'shed']
 
 _BOOTSTRAP = """
 import sys
@@ -28,7 +29,8 @@ worker_main(_spa_mc_config, _spa_mc_slab, _spa_mc_inbox, _spa_mc_doorbell)
 """
 
 UNLIMITED = 1 << 30
-INBOX_CAPACITY = 1024
+INBOX_CAPACITY = 1 << 16
+CAPACITY_POLL = 0.001
 DOORBELL = b'\x01'
 
 
@@ -40,6 +42,7 @@ class WorkerStartError(RuntimeError):
 class RouterStats:
     dispatched: list[int]
     shed: int
+    paused_ms: float
 
 
 class Engine:
@@ -51,6 +54,9 @@ class Engine:
         pin: bool = True,
         routing: Routing = 'least_loaded',
         limiter: LimiterConfig | None = LimiterConfig(),
+        overload: Overload = 'queue',
+        worker_queue: int = 1024,
+        max_queue_wait: float | None = None,
         shed_response: bytes = b'',
         on_start: str | None = None,
         request_timeout: float | None = None,
@@ -61,10 +67,14 @@ class Engine:
     ) -> None:
         if routing == 'reuseport' and not hasattr(socket, 'SO_REUSEPORT'):
             raise ValueError('reuseport routing needs SO_REUSEPORT')
+        if overload not in ('queue', 'shed'):
+            raise ValueError(f"overload must be 'queue' or 'shed', not {overload!r}")
         cpus = topology.physical_cpus()
         self.workers = workers or len(cpus)
         self.cores = [cpus[i % len(cpus)] if pin else -1 for i in range(self.workers)]
         self.routing = routing
+        self.overload = overload
+        self.worker_queue = worker_queue if overload == 'queue' else 0
         self.shed_response = shed_response
         self.watchdog_interval = watchdog_interval
         self.stall_threshold = stall_threshold
@@ -74,6 +84,8 @@ class Engine:
             'handler': handler,
             'on_start': on_start,
             'limiter': dataclasses.asdict(limiter) if limiter else None,
+            'overload': overload,
+            'max_queue_wait': max_queue_wait,
             'shed_response': shed_response.decode('latin-1'),
             'request_timeout': request_timeout,
             'watchdog_interval': watchdog_interval,
@@ -92,6 +104,7 @@ class Engine:
         self._failures: dict[int, BaseException] = {}
         self._dispatched = [0] * self.workers
         self._router_shed = 0
+        self._paused = 0.0
         self._next = 0
         self._acceptor: asyncio.Task | None = None
         self._listener: socket.socket | None = None
@@ -130,8 +143,14 @@ class Engine:
         return listener.getsockname()[:2]
 
     def dispatch(self, sock: socket.socket) -> int | None:
-        """Hand an accepted socket to a worker; returns its id, or None when the connection was shed."""
+        """Hand an accepted socket to a worker; returns its id, or None when the connection was shed.
+
+        With `overload='queue'` a connection is only shed if no worker is running at all; when every worker is
+        full it goes to the least loaded one and waits there.
+        """
         worker_id = self._pick()
+        if worker_id is None and self.overload == 'queue':
+            worker_id = self._pick(ignore_capacity=True)
         if worker_id is None:
             self._shed(sock)
             return None
@@ -149,7 +168,7 @@ class Engine:
         return [telemetry.read(self.slab, worker_id) for worker_id in range(self.workers)]
 
     def router_stats(self) -> RouterStats:
-        return RouterStats(dispatched=list(self._dispatched), shed=self._router_shed)
+        return RouterStats(dispatched=list(self._dispatched), shed=self._router_shed, paused_ms=self._paused * 1000)
 
     async def stop(self) -> None:
         if self._acceptor:
@@ -224,6 +243,8 @@ class Engine:
     async def _accept_loop(self, listener: socket.socket) -> None:
         loop = asyncio.get_running_loop()
         while True:
+            if self.overload == 'queue':
+                await self._wait_for_capacity()
             try:
                 sock, _ = await loop.sock_accept(listener)
             except OSError:
@@ -237,21 +258,42 @@ class Engine:
                 traceback.print_exc(file=sys.stderr)
                 sock.close()
 
-    def _pick(self) -> int | None:
-        if self.routing == 'round_robin':
-            return self._pick_round_robin()
-        return self._pick_least_loaded()
+    async def _wait_for_capacity(self) -> None:
+        """Stop accepting while every worker is full, so new clients wait in the kernel's accept queue."""
+        if self._pick(peek=True) is not None:
+            return
+        started = time.monotonic()
+        while self._pick(peek=True) is None:
+            await asyncio.sleep(CAPACITY_POLL)
+        self._paused += time.monotonic() - started
 
-    def _pick_round_robin(self) -> int | None:
+    def _pick(self, *, ignore_capacity: bool = False, peek: bool = False) -> int | None:
+        if self.routing == 'round_robin':
+            return self._pick_round_robin(ignore_capacity, peek)
+        return self._pick_least_loaded(ignore_capacity, peek)
+
+    def _capacity(self, stats: WorkerStats, ignore_capacity: bool) -> float:
+        if ignore_capacity or not stats.limit:
+            return UNLIMITED
+        return stats.limit + self.worker_queue
+
+    def _outstanding(self, stats: WorkerStats) -> int:
+        return self._dispatched[stats.worker_id] - stats.completed - stats.shed
+
+    def _pick_round_robin(self, ignore_capacity: bool, peek: bool) -> int | None:
         for offset in range(self.workers):
             worker_id = (self._next + offset) % self.workers
             stats = telemetry.try_read(self.slab, worker_id)
-            if stats and stats.state is WorkerState.READY:
+            if stats is None or stats.state is not WorkerState.READY:
+                continue
+            if self._outstanding(stats) >= self._capacity(stats, ignore_capacity):
+                continue
+            if not peek:
                 self._next = (worker_id + 1) % self.workers
-                return worker_id
+            return worker_id
         return None
 
-    def _pick_least_loaded(self) -> int | None:
+    def _pick_least_loaded(self, ignore_capacity: bool, peek: bool) -> int | None:
         now = time.monotonic()
         healthy: tuple[float, int] | None = None
         fallback: tuple[float, int] | None = None
@@ -262,8 +304,8 @@ class Engine:
             if stats is None or stats.state is not WorkerState.READY:
                 continue
             limit = stats.limit or UNLIMITED
-            outstanding = self._dispatched[worker_id] - stats.completed - stats.shed
-            if outstanding >= limit:
+            outstanding = self._outstanding(stats)
+            if outstanding >= self._capacity(stats, ignore_capacity):
                 continue
             # Queue depth dominates; loop lag scales it so sub-threshold jitter cannot outweigh one request.
             score = (outstanding + 1) / limit * (1 + stats.loop_lag_ms / threshold_ms)
@@ -272,7 +314,8 @@ class Engine:
                 healthy = min(healthy, candidate) if healthy else candidate
             else:
                 fallback = min(fallback, candidate) if fallback else candidate
-        self._next = (self._next + 1) % self.workers
+        if not peek:
+            self._next = (self._next + 1) % self.workers
         chosen = healthy or fallback
         return chosen[1] if chosen else None
 

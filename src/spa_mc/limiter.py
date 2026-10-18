@@ -53,6 +53,10 @@ class VegasLimiter:
     def effective_limit(self) -> int:
         return max(self.config.min_limit, min(self.config.max_limit, int(self.limit)))
 
+    @property
+    def has_capacity(self) -> bool:
+        return self.in_flight < self.effective_limit
+
     def try_acquire(self) -> bool:
         if self.in_flight >= self.effective_limit:
             self.shed += 1

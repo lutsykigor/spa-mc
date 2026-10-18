@@ -4,11 +4,12 @@
 
 | platform | Python | result | log |
 |---|---|---|---|
-| Linux (Docker `python:3.14-slim`, arm64, 10 vCPUs) | 3.14.8 | **33 passed** | [tests-linux-py3.14.txt](tests-linux-py3.14.txt) |
-| macOS (Apple M5) | 3.14.8 | **31 passed, 2 skipped** (pinning and `reuseport` need Linux/Windows) | [tests-macos-py3.14.txt](tests-macos-py3.14.txt) |
+| Linux (Docker `python:3.14-slim`, arm64, 10 vCPUs) | 3.14.8 | **38 passed** | [tests-linux-py3.14.txt](tests-linux-py3.14.txt) |
+| macOS (Apple M5) | 3.14.8 | **36 passed, 2 skipped** (pinning and `reuseport` need Linux/Windows) | [tests-macos-py3.14.txt](tests-macos-py3.14.txt) |
 | Windows | 3.14 | via GitHub Actions on every push ([workflow](../.github/workflows/tests.yml)); no local run yet | — |
 
-The suite was also run five times on macOS and three to five times on Linux at each stage, with no flaky failures.
+The suite was run three to five times per platform at each stage. Repetition caught one intermittent failure: a torn
+telemetry read on Apple silicon, about once in twenty runs, which led to the checksummed records described below.
 
 What the suite proves, in short:
 
@@ -17,12 +18,16 @@ What the suite proves, in short:
 - 300 concurrent clients each get their own reply; connections spread over all workers;
 - the router sends **no** traffic to a worker whose loop is frozen (`least_loaded`), while `round_robin` does and those
   requests wait > 250 ms;
-- the valve contracts after a real stall, does **not** contract when the loop is merely busy, sheds exactly the excess
-  once the limit is reached (shed replies arrive intact), and treats a request timeout as a drop;
+- 10 requests against a limit of 3 **all complete**, never more than 3 running at once; when every worker is full the
+  router pauses accepting and still completes everything; `stop()` serves connections that were still queued;
+- shedding happens only when asked for: `overload='shed'` rejects exactly the excess (replies arrive intact), and
+  `max_queue_wait` rejects only connections that waited too long;
+- the limit contracts after a real stall, does **not** contract when the loop is merely busy, and treats a request
+  timeout as a drop;
 - a crashing handler does not take its worker down; start-up failures raise with the worker's error and leave no threads
   or interpreters behind; `stop()` releases threads, interpreters and descriptors;
 - a worker frozen in the middle of a telemetry write does not stop the acceptor;
-- seqlock reads under a truly parallel writer are never torn;
+- checksummed telemetry reads under a truly parallel writer are never torn (plain reads tear 1–2% of the time; see `bench/probes/torn_reads.py`);
 - on Linux (and Windows), each worker thread's real OS affinity is exactly its assigned CPU.
 
 ## Benchmarks: preliminary, do not quote
@@ -34,7 +39,8 @@ loses its core for 60 ms every 250 ms.
 The two complete runs below come from a **fanless MacBook Air (Apple M5) that throttled during the session**:
 its calibration loop drifted from 49 ms to 96 ms, and endpoint-security agents used about one core throughout.
 Scenarios were interleaved per round, so they shared the same conditions, but absolute numbers are not representative.
-They also predate the cross-platform handoff (datagram socketpair then, queue plus doorbell now).
+They also predate the cross-platform handoff and queue-by-default (in these runs only the round-robin noisy
+scenario shed any requests: 1–73 per round).
 Re-measure on an actively cooled machine before drawing conclusions.
 
 Median of 3 rounds, 4 workers, 8 s per scenario:

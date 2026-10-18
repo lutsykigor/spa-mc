@@ -64,7 +64,7 @@ def test_writes_from_a_subinterpreter_are_visible_without_copying():
     assert (stats.state, stats.in_flight, stats.limit, stats.core) == (WorkerState.READY, 5, 9, -1)
 
 
-def test_seqlock_reads_are_never_torn_under_a_parallel_writer():
+def test_checksummed_reads_are_never_torn_under_a_parallel_writer():
     slab = telemetry.allocate(2)
     interp = interpreters.create()
     interp.prepare_main(slab=slab, duration=1.0)
@@ -94,5 +94,5 @@ def test_seqlock_reads_are_never_torn_under_a_parallel_writer():
 def test_try_read_gives_up_on_a_slot_left_mid_update():
     slab = telemetry.allocate(1)
     telemetry.SlotWriter(slab, 0).publish(**FIELDS)
-    telemetry._SEQ.pack_into(slab, 0, 3)
+    slab[10] ^= 0xFF
     assert telemetry.try_read(slab, 0) is None
